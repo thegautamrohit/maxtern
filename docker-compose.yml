@@ -1,0 +1,27 @@
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: maxtern_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: maxtern
+      POSTGRES_PASSWORD: maxtern
+      POSTGRES_DB: maxtern
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest 
+    container_name: maxtern_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  postgres_data:
+  qdrant_data:  
