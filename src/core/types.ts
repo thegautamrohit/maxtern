@@ -5,4 +5,10 @@ interface Document {
   metadata: any;
 }
 
-export type { Document };
+interface Chunk {
+  content: string;
+  chunkIndex: number;
+  metadata: any;
+}
+
+export type { Document, Chunk };

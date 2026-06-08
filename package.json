@@ -11,6 +11,8 @@
   "dependencies": {
     "@langchain/community": "^1.1.29",
     "@langchain/core": "^1.1.48",
+    "@langchain/ollama": "^1.2.7",
+    "@langchain/textsplitters": "^1.0.1",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@qdrant/js-client-rest": "^1.18.0",
@@ -23,7 +25,8 @@
     "pg": "^8.21.0",
     "prisma": "^7.8.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -32,6 +35,7 @@
     "@types/pg": "^8.20.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/uuid": "^10.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.7",
     "tailwindcss": "^4",
