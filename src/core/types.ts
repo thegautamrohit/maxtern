@@ -20,4 +20,6 @@ interface RetrievedChunk {
   sourceType: "pdf" | "website" | "github";
 }
 
-export type { Document, Chunk, RetrievedChunk };
+type RetrievalStrategy = "semantic" | "summary";
+
+export type { Document, Chunk, RetrievedChunk, RetrievalStrategy };
