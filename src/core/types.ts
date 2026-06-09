@@ -11,4 +11,13 @@ interface Chunk {
   metadata: any;
 }
 
-export type { Document, Chunk };
+interface RetrievedChunk {
+  chunkId: string;
+  documentId: string;
+  content: string;
+  chunkIndex: number;
+  score: number;
+  sourceType: "pdf" | "website" | "github";
+}
+
+export type { Document, Chunk, RetrievedChunk };

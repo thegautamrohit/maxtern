@@ -122,7 +122,7 @@ src/
     ingest.ts                       ✅ Done
   retrieval/
     retrievers/
-      semantic-retriever.ts         🔴 Incomplete — placeholder only
+      semantic-retriever.ts         ✅ Done
     query-analyzer.ts               🔴 Not started
     retrieval-router.ts             🔴 Not started
   llm/                              🔴 Not started
@@ -264,26 +264,22 @@ GitHub returns `Document[]` → looped. PDF/Website return single `Document` →
 
 ---
 
-## Pending Components
+## Completed Components (continued)
 
-### `src/retrieval/retrievers/semantic-retriever.ts` — Next up
+### `src/retrieval/retrievers/semantic-retriever.ts`
 
-Flow:
-```
-query string
-  ↓
-embedText(query) → number[] (768 dims)
-  ↓
-qdrant.search("chunks", { vector, limit: 5 })
-  ↓
-extract chunkIds from payload
-  ↓
-prisma.chunk.findMany({ where: { id: { in: chunkIds } } })
-  ↓
-return RetrievedChunk[] { content, score, metadata }
-```
+Accepts a query string, embeds it, searches Qdrant for top-5 similar chunks, fetches content from PostgreSQL, and returns `RetrievedChunk[]`.
+
+Key details:
+- `embedText(query)` → 768-dim vector
+- `qdrant.search("chunks", { vector, limit: 5 })` → top 5 points
+- chunkIds extracted from Qdrant payload → `prisma.chunk.findMany`
+- Score + sourceType mapped via a `Map` for O(1) lookup (not filter per chunk)
+- `RetrievedChunk` type added to `src/core/types.ts`
 
 ---
+
+## Pending Components
 
 ### `src/retrieval/query-analyzer.ts`
 
@@ -353,7 +349,7 @@ Output: { "answer": "...", "debug": {} }
 | 6 | Recursive Chunking | ✅ Done |
 | 7 | Markdown Chunking | ✅ Done |
 | 8 | Embeddings | ✅ Done |
-| 9 | Semantic Retriever | 🔴 In progress |
+| 9 | Semantic Retriever | ✅ Done |
 | 10 | Query API | 🔴 Pending |
 | 11 | Answer Generation | 🔴 Pending |
 

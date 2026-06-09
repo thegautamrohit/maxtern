@@ -181,6 +181,53 @@ For semantic search on text, **Cosine similarity is the standard choice**.
 
 ---
 
+## 9. Semantic Retriever — how the pieces connect
+
+### The flow
+```
+query string
+  ↓
+embedText(query)                        → 768-dim vector
+  ↓
+qdrant.search("chunks", { vector, limit: 5 })   → top 5 similar points
+  ↓
+extract chunkIds from payload           → string[]
+  ↓
+prisma.chunk.findMany({ id: { in: chunkIds } })  → content from PostgreSQL
+  ↓
+combine score + sourceType from Qdrant with content from Prisma
+  ↓
+return RetrievedChunk[]
+```
+
+### Why two passes — Qdrant first, then PostgreSQL?
+Qdrant does similarity search but does not store content. PostgreSQL stores content but cannot do vector search. Each does what it's built for — Qdrant finds the right chunkIds, PostgreSQL fetches their text.
+
+### The O(n²) trap
+Naively, you might do a `.filter` inside `.map` to find the score for each chunk — but that's O(n²). For every chunk, you scan all searchResults to find its score.
+
+The fix: build a `Map<chunkId, { score, sourceType }>` from searchResults once — O(n). Then each lookup inside `.map` is O(1). Total: O(n) instead of O(n²).
+
+```typescript
+// slow — filter inside map
+score: searchResults.filter(item => item.payload?.chunkId === chunk.id)[0]?.score
+
+// fast — map lookup
+const scoreMap = new Map(searchResults.map(item => [item.payload?.chunkId, item]))
+score: scoreMap.get(chunk.id)?.score
+```
+
+### Where score lives vs. where sourceType lives
+- `score` is a **top-level field** on the Qdrant point — `item.score`
+- `sourceType` is inside the **payload** — `item.payload.sourceType`
+
+Common mistake: looking for `item.payload.score` — it doesn't exist there.
+
+### The answer in one go
+> "The semantic retriever embeds the query into a vector, searches Qdrant for the top-5 similar chunks, extracts chunkIds from the payload, fetches content from PostgreSQL, then combines score and sourceType from Qdrant with content from Prisma. A Map is used for O(1) score lookup instead of filtering inside map which would be O(n²)."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
