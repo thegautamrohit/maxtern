@@ -5,11 +5,12 @@ import summaryRetriever from "./retrievers/summary-retriever";
 export function retrievalRouter(
   retrievalType: RetrievalStrategy,
   query: string,
+  documentIds?: string[],
 ): Promise<RetrievedChunk[]> {
   if (retrievalType === "semantic") {
-    return semanticRetrieval(query);
+    return semanticRetrieval(query, documentIds);
   } else if (retrievalType === "summary") {
-    return summaryRetriever(query);
+    return summaryRetriever(query, documentIds);
   } else {
     throw new Error(`Unknown retrieval type: ${retrievalType}`);
   }

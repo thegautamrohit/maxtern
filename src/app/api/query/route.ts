@@ -3,12 +3,12 @@ import { handleQuery } from "@/workflows/query";
 
 export async function POST(request: NextRequest) {
   try {
-    const { query } = await request.json();
+    const { query, documentIds } = await request.json();
     if (!query) {
       return NextResponse.json({ error: "No query provided" }, { status: 400 });
     }
 
-    const response = await handleQuery(query);
+    const response = await handleQuery(query, documentIds);
 
     return NextResponse.json(
       {

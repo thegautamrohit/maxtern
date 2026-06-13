@@ -3,11 +3,21 @@ import prisma from "@/db/client";
 import { embedText } from "@/embeddings/embedder";
 import { RetrievedChunk } from "@/core/types";
 
-async function summaryRetriever(query: string): Promise<RetrievedChunk[]> {
+async function summaryRetriever(
+  query: string,
+  documentIds?: string[],
+): Promise<RetrievedChunk[]> {
   const searchVector = await embedText(query);
   const searchResults = await qdrant.search("chunks", {
     limit: 20,
     vector: searchVector,
+    ...(documentIds && documentIds.length > 0
+      ? {
+          filter: {
+            must: [{ key: "documentId", match: { any: documentIds } }],
+          },
+        }
+      : {}),
   });
 
   const retrievedChunkIds = searchResults

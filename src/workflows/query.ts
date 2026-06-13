@@ -7,19 +7,23 @@ import qdrant from "@/vector/client";
 
 export async function handleQuery(
   userQuery: string,
+  documentIds?: string[],
 ): Promise<{ answer: string; debugInfo: DebugInfo }> {
   const initTime = Date.now();
   const retrievalType = queryAnalyzer(userQuery);
-  const { count } = await qdrant.count("chunks");
   let answer = "";
   let retrievedChunks: RetrievedChunk[] = [];
   let isRagUsed = false;
 
-  if (count === 0) {
+  if (!documentIds || documentIds.length === 0) {
     answer = await generateAnswer(userQuery, []);
     isRagUsed = false;
   } else {
-    retrievedChunks = await retrievalRouter(retrievalType, userQuery);
+    retrievedChunks = await retrievalRouter(
+      retrievalType,
+      userQuery,
+      documentIds,
+    );
     answer = await generateAnswer(userQuery, retrievedChunks);
     isRagUsed = true;
   }
