@@ -12,33 +12,25 @@ import { ensureCollections } from "@/vector/collection";
 async function processSingleDocument(
   doc: Document,
   sourceType: "pdf" | "website" | "github",
-): Promise<string> {
+): Promise<string[]> {
   try {
-    const normalisedDoc = await normalizeDocument(doc);
+    const normalisedDoc = normalizeDocument(doc);
     const storedDocId = await storeDocument(normalisedDoc);
+    const chunks =
+      sourceType === "github"
+        ? await markdownChunk(normalisedDoc)
+        : await recursiveChunk(normalisedDoc);
 
-    if (sourceType === "github") {
-      const chunks = await markdownChunk(normalisedDoc);
-      const vectors = await embedTexts(
-        chunks?.map((chunk: Chunk) => chunk.content) || [],
-      );
-      await Promise.all(
-        chunks?.map(async (chunk: Chunk, index: number) => {
-          await storeChunk(chunk, vectors[index], storedDocId);
-        }),
-      );
-    } else if (sourceType === "website" || sourceType === "pdf") {
-      const chunks = await recursiveChunk(normalisedDoc);
-      const vectors = await embedTexts(
-        chunks?.map((chunk: Chunk) => chunk.content) || [],
-      );
-      await Promise.all(
-        chunks?.map(async (chunk: Chunk, index: number) => {
-          await storeChunk(chunk, vectors[index], storedDocId);
-        }),
-      );
-    }
-    return storedDocId;
+    const vectors = await embedTexts(
+      chunks?.map((chunk: Chunk) => chunk.content) || [],
+    );
+    await Promise.all(
+      chunks?.map(async (chunk: Chunk, index: number) => {
+        await storeChunk(chunk, vectors[index], storedDocId);
+      }),
+    );
+
+    return [storedDocId];
   } catch (error) {
     console.error("Error processing document:", error);
     throw new Error("Failed to process document");
@@ -49,7 +41,7 @@ export async function ingestDocument(
   sourceType: "pdf" | "website" | "github",
   source: string,
   branch?: string,
-): Promise<string> {
+): Promise<string[]> {
   try {
     await ensureCollections();
 
@@ -64,9 +56,9 @@ export async function ingestDocument(
       const storedDocIds = [];
       for (const doc of docs) {
         const storedDocId = await processSingleDocument(doc, sourceType);
-        storedDocIds.push(storedDocId);
+        storedDocIds.push(...storedDocId);
       }
-      return storedDocIds.join(","); // Return comma-separated IDs for multiple documents
+      return [...storedDocIds];
     } else {
       throw new Error(`Unsupported source type: ${sourceType}`);
     }

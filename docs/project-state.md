@@ -132,12 +132,14 @@ src/
     prompt.ts                       ✅ Done
   workflows/
     query.ts                        ✅ Done
-  observability/                    🔴 Not started
+  observability/                    ⏸ Deferred to V2
 
 app/
   api/
-    ingest/                         🔴 Not started
-    query/                          🔴 Not started
+    ingest/
+      route.ts                      ✅ Done
+    query/
+      route.ts                      ✅ Done
     documents/                      🔴 Not started
 ```
 
@@ -373,7 +375,7 @@ Output: { "answer": "...", "debug": {} }
 | 7 | Markdown Chunking | ✅ Done |
 | 8 | Embeddings | ✅ Done |
 | 9 | Semantic Retriever | ✅ Done |
-| 10 | Query API | 🔴 Pending |
+| 10 | Query API | ✅ Done |
 | 11 | Answer Generation | ✅ Done |
 
 ### Phase 2 — Adaptive Retrieval
@@ -382,7 +384,7 @@ Output: { "answer": "...", "debug": {} }
 | 12 | Summary Retriever | ✅ Done |
 | 13 | Query Analyzer | ✅ Done |
 | 14 | Retrieval Router | ✅ Done |
-| 15 | Observability | 🔴 Pending |
+| 15 | Observability | ⏸ Deferred to V2 |
 
 ### Phase 3 — V2
 | # | Component | Status |
