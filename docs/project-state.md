@@ -123,10 +123,15 @@ src/
   retrieval/
     retrievers/
       semantic-retriever.ts         ✅ Done
-    query-analyzer.ts               🔴 Not started
-    retrieval-router.ts             🔴 Not started
-  llm/                              🔴 Not started
-  prompts/                          🔴 Not started
+      summary-retriever.ts          ✅ Done
+    query-analyzer.ts               ✅ Done
+    retrieval-router.ts             ✅ Done
+  llm/
+    llm.ts                          ✅ Done
+  prompts/
+    prompt.ts                       ✅ Done
+  workflows/
+    query.ts                        ✅ Done
   observability/                    🔴 Not started
 
 app/
@@ -279,32 +284,50 @@ Key details:
 
 ---
 
-## Pending Components
+## Completed Components (continued)
+
+### `src/retrieval/retrievers/summary-retriever.ts`
+
+Same flow as semantic retriever — `limit: 20` instead of 5. Kept as a separate file intentionally for future divergence (document-level filtering, different scoring logic in V2).
+
+---
 
 ### `src/retrieval/query-analyzer.ts`
 
-Rule-based. No LLM.
-
-```
-query contains "summarize" | "overview" | "architecture" → "summary"
-otherwise → "semantic"
-```
+Rule-based, no LLM. Checks if query contains summary keywords (`summary`, `summarise`, `overview`, `architecture`) using `.some()` — returns `"summary"` or `"semantic"` as `RetrievalStrategy`.
 
 ---
 
 ### `src/retrieval/retrieval-router.ts`
 
-Routes to correct retriever based on query analyzer output.
+Takes `RetrievalStrategy` + `query`, calls the correct retriever, returns `Promise<RetrievedChunk[]>`.
 
 ---
 
-### `src/llm/` — Answer Generation
+### `src/prompts/prompt.ts`
 
-Input: query + retrieved chunks
-Output: grounded answer string
-Rules: use only retrieved context, no hallucination
+`qaPrompt` — LangChain `PromptTemplate` with `{context}` and `{userQuery}` variables. Instructs LLM to answer using only retrieved context. Returns "I don't have enough information" if answer not in context.
 
 ---
+
+### `src/llm/llm.ts`
+
+`generateAnswer(query, chunks)` — builds context string from chunk contents, pipes `qaPrompt | ChatOllama("llama3") | StringOutputParser` via LCEL chain, returns answer as `Promise<string>`.
+
+---
+
+### `src/workflows/query.ts`
+
+`handleQuery(userQuery)` — end-to-end query orchestrator:
+1. `queryAnalyzer` → `RetrievalStrategy`
+2. `retrievalRouter` → `RetrievedChunk[]`
+3. `generateAnswer` → answer string
+4. Fetches document titles from PostgreSQL via Map (O(1) lookup, not N+1)
+5. Returns `{ answer, debugInfo: DebugInfo }` — tokens placeholder for now
+
+---
+
+## Pending Components
 
 ### `src/observability/` — Debug Layer
 
@@ -351,14 +374,14 @@ Output: { "answer": "...", "debug": {} }
 | 8 | Embeddings | ✅ Done |
 | 9 | Semantic Retriever | ✅ Done |
 | 10 | Query API | 🔴 Pending |
-| 11 | Answer Generation | 🔴 Pending |
+| 11 | Answer Generation | ✅ Done |
 
 ### Phase 2 — Adaptive Retrieval
 | # | Component | Status |
 |---|---|---|
-| 12 | Summary Retriever | 🔴 Pending |
-| 13 | Query Analyzer | 🔴 Pending |
-| 14 | Retrieval Router | 🔴 Pending |
+| 12 | Summary Retriever | ✅ Done |
+| 13 | Query Analyzer | ✅ Done |
+| 14 | Retrieval Router | ✅ Done |
 | 15 | Observability | 🔴 Pending |
 
 ### Phase 3 — V2

@@ -228,6 +228,99 @@ Common mistake: looking for `item.payload.score` — it doesn't exist there.
 
 ---
 
+## 10. Query Analyzer — rule-based vs LLM-based
+
+### Why no LLM here?
+Simple keyword matching does not need an LLM. Using an LLM to classify "summarize this" vs "what is JWT" would add ~500ms latency and API cost on every single query — for a decision that a few `.includes()` checks can make in microseconds.
+
+Rule: **use code where code is sufficient. Use LLM only where judgment is required.**
+
+### Why `.some()` and not `.map()` or `.forEach()`?
+`.some()` short-circuits — it stops as soon as one keyword matches. `.map()` always iterates the full array regardless. For a small keywords array this doesn't matter much, but the intent is clearer with `.some()` — "does any keyword match?"
+
+### The answer in one go
+> "The query analyzer is intentionally rule-based — no LLM involved. Adding an LLM for a binary classification that a few string checks can handle would add latency and cost on every query. `.some()` is used over `.map()` because it short-circuits on first match and clearly expresses the intent."
+
+---
+
+## 11. Summary vs Semantic Retriever — why keep them separate?
+
+### The question
+Both retrievers do the same thing — embed query, search Qdrant, fetch from PostgreSQL. Only `limit` is different (5 vs 20). Why not one shared function?
+
+### Why separate files make sense here
+They look the same now but will diverge in V2:
+- Summary retriever will add **document-level filtering** — retrieve chunks from a specific document, not just top-N globally
+- Semantic retriever will get **hybrid search** — dense + sparse vectors combined
+- Different scoring, re-ranking, or post-processing logic may apply to each
+
+If they were a single shared function with a `limit` parameter, any V2 change to one would risk affecting the other. Separate files = isolated changes.
+
+### The rule
+DRY (Don't Repeat Yourself) is a good principle, but not when two things are **accidentally similar** rather than **fundamentally the same**. These two retrievers share implementation today but have different responsibilities and different futures.
+
+### The answer in one go
+> "Both retrievers share the same flow today — the only difference is limit (5 vs 20). They're kept separate because they will diverge in V2: summary retriever needs document-scoped filtering, semantic retriever gets hybrid search. Premature unification would couple two independently evolving pieces."
+
+---
+
+## 12. LangChain LCEL — pipe pattern for chaining
+
+### What is LCEL?
+LCEL (LangChain Expression Language) is LangChain's way of composing chains using the `|` pipe operator — same concept as Unix pipes.
+
+```typescript
+const chain = qaPrompt | llm | new StringOutputParser()
+const result = await chain.invoke({ userQuery, context })
+```
+
+Each step's output becomes the next step's input. LangChain handles the type conversion internally.
+
+### Why use it over manual chaining?
+Without LCEL:
+```typescript
+const formatted = await qaPrompt.format({ userQuery, context })
+const response = await llm.invoke(formatted)
+const text = response.content as string
+```
+
+With LCEL — same result, less boilerplate, and the chain is composable/reusable.
+
+### `StringOutputParser` — what it does
+`ChatOllama.invoke()` returns a `BaseMessage` object — not a plain string. `StringOutputParser` extracts `.content` and returns it as `string`. Without it, you'd manually cast `response.content as string`.
+
+### The answer in one go
+> "LCEL's pipe operator composes LangChain runnables — prompt → LLM → parser. Each step's output flows into the next. StringOutputParser at the end extracts the content string from the LLM's message object, so the chain returns a plain string directly."
+
+---
+
+## 13. N+1 query problem — and how to avoid it
+
+### What is N+1?
+If you have N chunks and for each chunk you make a separate DB query to get the document title — that's N+1 queries (1 for retrieval + N for titles). With 20 chunks in summary retrieval, that's 21 DB round trips.
+
+### The fix — fetch once, lookup via Map
+```typescript
+// fetch all document titles in one query
+const docs = await prisma.document.findMany({
+  where: { id: { in: documentIds } },
+  select: { id: true, title: true }
+})
+
+// build a Map for O(1) lookup
+const titleMap = new Map(docs.map(d => [d.id, d.title]))
+
+// use in .map() — no DB call per chunk
+sourceTitle: titleMap.get(chunk.documentId) ?? "Unknown"
+```
+
+This pattern appears twice in this project — once for `scoreMap` in the retrievers, once for `titleMap` in `query.ts`. Same idea: batch fetch → Map → O(1) lookup.
+
+### The answer in one go
+> "N+1 happens when you make one DB query per item in a loop. Fix: collect all IDs, fetch in one `findMany`, build a Map keyed by ID, then look up in O(1) during the loop. Total: 1 DB query instead of N."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
