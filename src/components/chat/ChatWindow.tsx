@@ -46,7 +46,7 @@ export default function ChatWindow({
       onUpdateSession({
         ...session,
         sourceType: type,
-        documentIds: data.documentId,
+        documentIds: data.documentIds,
         sourceLabel: source,
       });
       setSheetOpen(false);
