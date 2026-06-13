@@ -13,7 +13,7 @@ datasource db {
 }
 
 model Document {
-  id String @id @default(cuid())
+  id String @id @default(uuid())
   title String
   content String
   sourceType String
@@ -23,7 +23,7 @@ model Document {
 }
 
 model Chunk {
-  id String @id @default(cuid())
+  id String @id @default(uuid())
   content String
   metadata Json
   chunkIndex Int

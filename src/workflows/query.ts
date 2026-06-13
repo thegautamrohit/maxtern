@@ -1,16 +1,28 @@
 import { queryAnalyzer } from "@/retrieval/query-analyzer";
 import { retrievalRouter } from "@/retrieval/retrieval-router";
 import { generateAnswer } from "@/llm/llm";
-import { DebugInfo } from "@/core/types";
+import { DebugInfo, RetrievedChunk } from "@/core/types";
 import prisma from "@/db/client";
+import qdrant from "@/vector/client";
 
 export async function handleQuery(
   userQuery: string,
 ): Promise<{ answer: string; debugInfo: DebugInfo }> {
   const initTime = Date.now();
   const retrievalType = queryAnalyzer(userQuery);
-  const retrievedChunks = await retrievalRouter(retrievalType, userQuery);
-  const answer = await generateAnswer(userQuery, retrievedChunks);
+  const { count } = await qdrant.count("chunks");
+  let answer = "";
+  let retrievedChunks: RetrievedChunk[] = [];
+  let isRagUsed = false;
+
+  if (count === 0) {
+    answer = await generateAnswer(userQuery, []);
+    isRagUsed = false;
+  } else {
+    retrievedChunks = await retrievalRouter(retrievalType, userQuery);
+    answer = await generateAnswer(userQuery, retrievedChunks);
+    isRagUsed = true;
+  }
   const retrievedDocIds = retrievedChunks.map((chunk) => chunk.documentId);
   const docTitles = await prisma.document.findMany({
     where: {
@@ -47,7 +59,7 @@ export async function handleQuery(
         completionTokens: 0,
         totalTokens: 0,
         estimatedCost: "$0",
-        ragUsed: true,
+        ragUsed: isRagUsed,
       },
     },
   };

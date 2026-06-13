@@ -434,6 +434,20 @@ After retrieval, evaluate chunk relevance scores. If scores are low (poor retrie
 **Queue-based Ingestion**
 BullMQ + Redis for async ingestion. Large PDFs and GitHub repos can take minutes — move to background jobs with status polling.
 
+**SSE Streaming for Query API**
+Implement Server-Sent Events (SSE) on `POST /api/query` for streaming LLM responses token-by-token. Industry standard approach used by OpenAI, Anthropic, Perplexity.
+
+Event format:
+```
+data: {"type": "debug", "payload": {...debugInfo}}   ← sent first, after retrieval
+data: {"type": "token", "payload": "JWT"}            ← one per LLM token
+data: [DONE]                                         ← stream end signal
+```
+
+Flow: retrieval runs first → debug event sent → LLM streams tokens → [DONE].
+
+Deferred to post-V2 — implement alongside BullMQ queues so long-running ingestion jobs and streaming query responses share the same async infrastructure. Frontend will use `fetch` with `ReadableStream` to consume the SSE stream.
+
 ## V3 — Agentic Capabilities
 
 **Tool Calling**

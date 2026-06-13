@@ -1,20 +1,29 @@
 import { PromptTemplate } from "@langchain/core/prompts";
 
-const qaPrompt = new PromptTemplate({
+export const qaPrompt = new PromptTemplate({
   template: `You are a helpful assistant.
-            Answer the question using ONLY the context below.
-            If the answer is not present in the context, say:
-            "I don't have enough information in the provided document."
+Answer the question using ONLY the context below.
+If the answer is not present in the context, say:
+"I don't have enough information in the provided document."
 
-            Context:
-            {context}
+Context:
+{context}
 
-            Question:
-            {userQuery}
+Question:
+{userQuery}
 
-            Answer briefly and clearly.`,
+Answer briefly and clearly.`,
   inputVariables: ["userQuery", "context"],
   validateTemplate: true,
 });
 
-export default qaPrompt;
+export const generalPrompt = new PromptTemplate({
+  template: `You are a helpful, knowledgeable assistant.
+Answer the following question clearly and concisely.
+Do not mention documents or context — just answer directly.
+
+Question:
+{userQuery}`,
+  inputVariables: ["userQuery"],
+  validateTemplate: true,
+});
