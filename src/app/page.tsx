@@ -1,9 +1,5 @@
-function Home() {
-  return (
-    <div>
-      <h1 className="text-3xl font-bold">Maxtern</h1>
-    </div>
-  );
-}
+import { redirect } from "next/navigation";
 
-export default Home;
+export default function Home() {
+  redirect("/chat");
+}
