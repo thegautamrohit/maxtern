@@ -1,6 +1,6 @@
 # Maxtern — Project State
 
-Last updated: 2026-06-08
+Last updated: 2026-06-14
 
 ---
 
@@ -571,19 +571,33 @@ type TokenUsage = {
 
 | Component | Status |
 |---|---|
-| Sidebar | 🔴 Not started |
-| ChatWindow | 🔴 Not started |
-| MessageList / MessageBubble | 🔴 Not started |
-| MessageInput | 🔴 Not started |
-| SourceSelector | 🔴 Not started |
-| PDFUpload / URLInput / GitHubInput | 🔴 Not started |
-| DebugPanel (container) | 🔴 Not started |
-| DebugSummaryBar | 🔴 Not started |
-| ChunkCard + ChunkList | 🔴 Not started |
-| RetrieverBadge | 🔴 Not started |
-| TokenUsage | 🔴 Not started |
-| `/chat` route | 🔴 Not started |
-| `/chat/[chatId]` route | 🔴 Not started |
+| Sidebar | ✅ Done |
+| ChatLayout | ✅ Done |
+| ChatWindow | ✅ Done |
+| MessageList / MessageBubble | ✅ Done |
+| MessageInput | ✅ Done |
+| SourceSelector | ✅ Done |
+| PDFUpload / URLInput / GitHubInput | ✅ Done |
+| DebugPanel (container) | ✅ Done |
+| DebugSummaryBar | ✅ Done |
+| ChunkCard + ChunkList | ✅ Done |
+| RetrieverBadge | ✅ Done |
+| TokenUsage | ✅ Done |
+| ThemeToggle (dark/light) | ✅ Done |
+| `/chat` route | ✅ Done |
+| `/chat/[chatId]` route | 🔴 Not needed (single-session V1) |
+
+### Session Isolation
+- `documentIds` stored in `ChatSession`
+- Passed to `/api/query` → `handleQuery` → `retrievalRouter` → retrievers
+- Qdrant filter: `match: { any: documentIds }` — only session's chunks searched
+- No documentIds → general LLM answer (no retrieval)
+
+### UX Flow (current)
+- No blocking source selector screen — chat starts immediately
+- Paperclip button in input opens bottom Sheet with SourceSelector
+- Source badge shown at top after ingest — clickable to change source
+- Dark/light theme toggle in sidebar footer
 
 ---
 

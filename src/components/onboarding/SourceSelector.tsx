@@ -42,7 +42,7 @@ export default function SourceSelector({ onIngest, onSkip, disabled }: SourceSel
             onClick={() => setSelected(selected === type ? null : type)}
             disabled={disabled}
             className={cn(
-              "flex-1 flex flex-col items-center gap-1.5 rounded-xl border border-border py-3 px-2 text-xs font-medium transition-colors hover:bg-accent",
+              "flex-1 flex flex-col items-center gap-1.5 rounded-xl border border-border py-3 px-2 text-xs font-medium transition-colors cursor-pointer hover:bg-accent",
               selected === type && "border-primary bg-primary/5 text-primary",
             )}
           >

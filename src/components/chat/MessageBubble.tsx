@@ -15,10 +15,10 @@ export default function MessageBubble({ message }: MessageBubbleProps) {
     <div className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
       <div
         className={cn(
-          "max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
+          "max-w-[88%] md:max-w-[70%] rounded-2xl px-3 py-2.5 md:px-4 md:py-3 text-xs md:text-sm leading-relaxed",
           isUser
-            ? "bg-primary text-primary-foreground rounded-br-sm"
-            : "bg-muted text-foreground rounded-bl-sm",
+            ? "bg-primary text-primary-foreground rounded-br-sm shadow-md shadow-primary/20"
+            : "bg-card text-foreground rounded-bl-sm border border-border/60 shadow-sm",
         )}
       >
         {message.content}

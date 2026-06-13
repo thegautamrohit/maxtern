@@ -18,11 +18,11 @@ export default function DebugPanel({ debug }: DebugPanelProps) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="rounded-xl border border-border bg-muted/20 text-xs overflow-hidden">
+    <div className="rounded-xl border border-border/60 bg-card text-xs overflow-hidden shadow-sm">
       {/* Summary bar — always visible */}
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 hover:bg-muted/40 transition-colors"
+        className="w-full flex items-center justify-between px-3 py-2 hover:bg-muted/40 transition-colors cursor-pointer"
       >
         <DebugSummaryBar debug={debug} />
         {open ? (

@@ -19,16 +19,16 @@ export default function ChatLayout({ sidebar, children }: ChatLayoutProps) {
 
       {/* Mobile sidebar — Sheet */}
       <div className="flex flex-col flex-1 min-w-0">
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-border md:hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 bg-background md:hidden">
+          <span className="text-xs font-semibold tracking-widest uppercase text-primary">Maxtern</span>
           <Sheet>
-            <SheetTrigger className="inline-flex items-center justify-center rounded-md p-2 hover:bg-accent">
-              <Menu className="h-5 w-5" />
+            <SheetTrigger className="inline-flex items-center justify-center rounded-lg p-2 hover:bg-muted transition-colors cursor-pointer">
+              <Menu className="h-4 w-4" />
             </SheetTrigger>
             <SheetContent side="left" className="w-64 p-0">
               {sidebar}
             </SheetContent>
           </Sheet>
-          <span className="font-semibold text-sm">Maxtern</span>
         </div>
 
         {/* Main content */}

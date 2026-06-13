@@ -321,6 +321,69 @@ This pattern appears twice in this project — once for `scoreMap` in the retrie
 
 ---
 
+## 14. Session Isolation — why filter at Qdrant, not at Prisma
+
+### The problem
+Without isolation, every query searches all chunks across all ingested documents — regardless of which session ingested them. Session A ingests React docs, Session B ingests Python docs, Session A's query now returns Python chunks too.
+
+### Why the filter goes in Qdrant, not Prisma
+
+The naive fix might be: fetch chunk IDs from Qdrant, then filter by `documentId` in the Prisma `findMany`. But this is wrong — Qdrant has already done similarity ranking at that point. If you filter after retrieval, you might discard the most relevant chunks and keep irrelevant ones just because they belong to the right document.
+
+The filter must go **inside the Qdrant search call** — before scoring and ranking — so Qdrant only considers chunks from the current session's documents:
+
+```typescript
+qdrant.search("chunks", {
+  vector: queryVector,
+  limit: 5,
+  filter: {
+    must: [
+      { key: "documentId", match: { any: documentIds } }
+    ]
+  }
+})
+```
+
+Prisma's `findMany` after this is just a content fetch — the filtering is already done.
+
+### `match: { any: [...] }` vs `match: { value: "..." }`
+- `match: { value: "x" }` — exact single value match (SQL `= 'x'`)
+- `match: { any: ["a", "b"] }` — matches if payload field equals any value in the array (SQL `IN (...)`)
+
+`any` is used here because a session can have multiple documentIds (e.g. a GitHub repo produces one documentId per file).
+
+### No documentIds → no filter → general LLM
+If `documentIds` is undefined or empty (user skipped source selection), the filter is skipped entirely and the LLM answers directly — no retrieval. This is the "just ask anything" path.
+
+### The answer in one go
+> "Session isolation is enforced at the Qdrant search level — not in Prisma. Filtering after vector search would discard high-ranking chunks that don't belong to the session, keeping low-ranking ones that do. The Qdrant `filter.must` clause scopes the vector search to only the session's documentIds before any ranking happens. Prisma then just fetches content for the already-correct IDs."
+
+---
+
+## 15. Qdrant Point ID constraint — UUID only, not cuid
+
+### The problem
+Qdrant point IDs must be either a **UUID** or an **unsigned integer**. Arbitrary strings (including Prisma's default `cuid()`) are rejected with a `Bad Request` error.
+
+### Why this matters
+Prisma's default `@default(cuid())` generates IDs like `clx3m8k9f0000abc123`. We used the Chunk's PostgreSQL `id` directly as the Qdrant point ID — which broke because cuid is not a valid Qdrant ID format.
+
+### The fix
+Changed Prisma schema for both `Document` and `Chunk` models:
+```prisma
+id  String  @id @default(uuid())
+```
+
+Ran `prisma generate` + `prisma migrate`. Now PostgreSQL IDs are valid UUIDs → usable as Qdrant point IDs directly.
+
+### Why this is the right approach
+Using the same ID in both PostgreSQL and Qdrant is intentional — it makes the `chunkId` in Qdrant payload and the `id` in PostgreSQL the same value, so there's no mapping layer needed. The constraint just means the shared ID must be UUID format.
+
+### The answer in one go
+> "Qdrant only accepts UUID or unsigned integer as point IDs — cuid strings are rejected. Switching Prisma's `@default(cuid())` to `@default(uuid())` makes PostgreSQL IDs valid Qdrant point IDs, allowing us to use the same ID across both stores without any translation layer."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
@@ -347,8 +410,15 @@ This pattern appears twice in this project — once for `scoreMap` in the retrie
 - Why would you avoid LangChain's VectorStore abstraction in a production system?
 - What are LangChain loaders and what is their responsibility?
 
+### Session Isolation & Filtering
+- How do you scope vector search to a specific user's documents?
+- Why should you filter at the vector DB level and not after retrieval?
+- What is the difference between `match: { value }` and `match: { any }` in Qdrant filters?
+- What happens if no documentIds are passed — what should the system do?
+
 ### Production Concerns
 - How would you scale the ingestion pipeline for large files?
 - What is the risk of embedding each chunk individually vs. in batch?
 - How would you handle re-ingestion of a document (updated version)?
 - What is idempotency and where does it matter in this system?
+- What ID format constraints does Qdrant impose and why does it matter when sharing IDs across databases?

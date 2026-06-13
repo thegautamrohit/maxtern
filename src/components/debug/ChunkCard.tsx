@@ -10,7 +10,7 @@ type ChunkCardProps = {
 
 export default function ChunkCard({ chunk, rank }: ChunkCardProps) {
   return (
-    <div className="rounded-lg border border-border bg-background p-3 text-xs flex flex-col gap-2">
+    <div className="rounded-lg border border-border/50 bg-muted/30 p-3 text-xs flex flex-col gap-2">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground font-medium">#{rank}</span>
@@ -21,7 +21,7 @@ export default function ChunkCard({ chunk, rank }: ChunkCardProps) {
         </div>
         <div className="flex items-center gap-2 text-muted-foreground">
           <span>chunk {chunk.chunkIndex}</span>
-          <span className="font-mono text-green-600 dark:text-green-400">
+          <span className="font-mono text-primary font-medium">
             {(chunk.score * 100).toFixed(1)}%
           </span>
         </div>
