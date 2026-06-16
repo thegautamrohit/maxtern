@@ -5,7 +5,10 @@ export async function githubLoader(
   repoUrl: string,
   branch: string = "main",
 ): Promise<Document[]> {
-  const loader = new GithubRepoLoader(repoUrl, { branch });
+  const loader = new GithubRepoLoader(repoUrl, {
+    branch,
+    accessToken: process.env.GITHUB_TOKEN,
+  });
   const docs = await loader.load();
   if (!docs || docs.length === 0) {
     throw new Error(
@@ -28,11 +31,3 @@ export async function githubLoader(
 
   return transformedDocs;
 }
-
-// githubLoader("https://github.com/ed-roh/mern-social-media", "master")
-//   .then((docs) => {
-//     console.log(JSON.stringify(docs, null, 2));
-//   })
-//   .catch((err) => {
-//     console.error("Error loading GitHub repository:", err);
-//   });
