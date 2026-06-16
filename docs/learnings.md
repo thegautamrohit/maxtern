@@ -384,6 +384,80 @@ Using the same ID in both PostgreSQL and Qdrant is intentional — it makes the 
 
 ---
 
+## 16. ChatPromptTemplate + MessagesPlaceholder — multi-turn conversation
+
+### Why not `PromptTemplate` for chat?
+
+`PromptTemplate` produces a single string — designed for completion models. `ChatOllama` (and OpenAI, Gemini) are **chat models** — they expect a list of typed message objects, not a single string.
+
+```
+PromptTemplate      →  single string       →  completion models
+ChatPromptTemplate  →  list of messages    →  chat models
+```
+
+### `ChatPromptTemplate.fromMessages()`
+
+Defines the message structure sent to the LLM on every invoke:
+
+```typescript
+import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+
+const prompt = ChatPromptTemplate.fromMessages([
+  ["system", "You are a helpful assistant. Context: {context}"],
+  new MessagesPlaceholder("history"),
+  ["human", "{userQuery}"],
+]);
+```
+
+Tuple syntax `["role", "content"]` — role can be `"system"`, `"human"`, or `"ai"`.
+
+### What `MessagesPlaceholder` does
+
+Reserves a slot in the prompt where an **array of message objects** (`HumanMessage[]`, `AIMessage[]`) gets injected at runtime. A normal `{variable}` injects a string — `MessagesPlaceholder` injects typed message objects that the chat model understands as actual conversation turns.
+
+```typescript
+chain.invoke({
+  history: [
+    new HumanMessage("What is JWT?"),
+    new AIMessage("JWT is a signed token format..."),
+  ],
+  userQuery: "How is it different from sessions?",
+  context: "...",
+})
+
+// What the LLM receives:
+// system:  You are helpful. Context: ...
+// human:   What is JWT?
+// ai:      JWT is a signed token format...
+// human:   How is it different from sessions?
+```
+
+### The key name
+
+`MessagesPlaceholder("history")` — `"history"` is just a key name. The invoke object's property must match it. `"chatHistory"`, `"messages"`, anything works — just keep it consistent between the prompt definition and the invoke call.
+
+### Empty history on first message
+
+`MessagesPlaceholder` accepts an empty array. Pass `history: []` on the first message — nothing gets injected, the prompt behaves normally. No special case needed.
+
+### Multiple placeholders
+
+```typescript
+ChatPromptTemplate.fromMessages([
+  ["system", "..."],
+  new MessagesPlaceholder("examples"),   // few-shot examples
+  new MessagesPlaceholder("history"),    // conversation turns
+  ["human", "{userQuery}"],
+])
+```
+
+This project uses only `"history"`.
+
+### The answer in one go
+> "`PromptTemplate` produces a single string — wrong for chat models. `ChatPromptTemplate.fromMessages()` produces a list of typed message objects that chat models natively understand as conversation turns. `MessagesPlaceholder` reserves a slot in the prompt where `HumanMessage[]` and `AIMessage[]` are injected at runtime. An empty array on the first message requires no special handling — nothing is injected and the prompt behaves normally."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
@@ -409,6 +483,9 @@ Using the same ID in both PostgreSQL and Qdrant is intentional — it makes the 
 - What is the difference between RecursiveCharacterTextSplitter and MarkdownTextSplitter?
 - Why would you avoid LangChain's VectorStore abstraction in a production system?
 - What are LangChain loaders and what is their responsibility?
+- What is the difference between `PromptTemplate` and `ChatPromptTemplate`?
+- What does `MessagesPlaceholder` do and why is it needed for conversation history?
+- How would you pass few-shot examples alongside conversation history in a single prompt?
 
 ### Session Isolation & Filtering
 - How do you scope vector search to a specific user's documents?

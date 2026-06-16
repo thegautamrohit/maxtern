@@ -77,7 +77,7 @@ export default function ChatWindow({
       const res = await fetch("/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, documentIds: session.documentIds }),
+        body: JSON.stringify({ query, documentIds: session.documentIds, history: session.messages }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Query failed");

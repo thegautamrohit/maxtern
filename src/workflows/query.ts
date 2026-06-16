@@ -2,12 +2,13 @@ import { queryAnalyzer } from "@/retrieval/query-analyzer";
 import { retrievalRouter } from "@/retrieval/retrieval-router";
 import { generateAnswer } from "@/llm/llm";
 import { DebugInfo, RetrievedChunk } from "@/core/types";
+import { BaseMessage } from "@langchain/core/messages";
 import prisma from "@/db/client";
-import qdrant from "@/vector/client";
 
 export async function handleQuery(
   userQuery: string,
   documentIds?: string[],
+  transformedHistory?: BaseMessage[],
 ): Promise<{ answer: string; debugInfo: DebugInfo }> {
   const initTime = Date.now();
   const retrievalType = queryAnalyzer(userQuery);
@@ -16,7 +17,7 @@ export async function handleQuery(
   let isRagUsed = false;
 
   if (!documentIds || documentIds.length === 0) {
-    answer = await generateAnswer(userQuery, []);
+    answer = await generateAnswer(userQuery, [], transformedHistory);
     isRagUsed = false;
   } else {
     retrievedChunks = await retrievalRouter(
@@ -24,7 +25,7 @@ export async function handleQuery(
       userQuery,
       documentIds,
     );
-    answer = await generateAnswer(userQuery, retrievedChunks);
+    answer = await generateAnswer(userQuery, retrievedChunks, transformedHistory);
     isRagUsed = true;
   }
   const retrievedDocIds = retrievedChunks.map((chunk) => chunk.documentId);
