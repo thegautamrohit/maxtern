@@ -458,6 +458,64 @@ This project uses only `"history"`.
 
 ---
 
+## 17. File uploads in Next.js — multipart/form-data vs JSON
+
+### The problem with JSON for file uploads
+JSON is text — it cannot carry binary data (PDF bytes) directly. File uploads require `multipart/form-data`, which encodes binary chunks alongside metadata in a single HTTP request.
+
+### Frontend — FormData
+```typescript
+const formData = new FormData();
+formData.append("file", file);   // File object from <input type="file">
+formData.append("type", "pdf");
+
+fetch("/api/ingest", { method: "POST", body: formData });
+// Browser sets Content-Type: multipart/form-data automatically
+```
+No `Content-Type` header set manually — browser handles it and adds the boundary string that separates parts.
+
+### Backend — detecting and parsing
+One route handles both JSON and multipart:
+```typescript
+const contentType = request.headers.get("content-type") ?? "";
+
+if (contentType.includes("multipart/form-data")) {
+  const formData = await request.formData();
+  const file = formData.get("file") as File | null;
+}
+```
+`request.formData()` parses the binary stream into a `File` object — still in memory at this point.
+
+### Why save to disk?
+`PDFLoader` (LangChain) requires a file path — it cannot accept an in-memory `File` object. The only option is to write the file to disk temporarily:
+
+```typescript
+const buffer = Buffer.from(await file.arrayBuffer());
+const tmpPath = join(tmpdir(), `${randomUUID()}.pdf`);
+writeFileSync(tmpPath, buffer);
+```
+
+- `file.arrayBuffer()` — raw bytes from the in-memory File object
+- `Buffer.from()` — converts to Node.js Buffer format (what `writeFileSync` expects)
+- `tmpdir()` — OS temp directory (`/tmp` on macOS/Linux), platform-independent
+- `randomUUID()` — unique filename prevents concurrent upload collisions
+
+### Cleanup with finally
+```typescript
+try {
+  const documentIds = await ingestDocument("pdf", tmpPath);
+  return NextResponse.json({ documentIds });
+} finally {
+  unlinkSync(tmpPath);  // always runs — success or error
+}
+```
+`finally` guarantees cleanup even if `ingestDocument` throws. Without it, failed uploads leave orphan files in `/tmp`.
+
+### The answer in one go
+> "JSON cannot carry binary data — file uploads use `multipart/form-data`. The server detects this via the `Content-Type` header and parses with `request.formData()`. Since `PDFLoader` needs a file path, the in-memory `File` object is converted to a Node.js `Buffer` and written to `/tmp/`. A `finally` block guarantees the temp file is deleted regardless of success or failure."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
@@ -492,6 +550,12 @@ This project uses only `"history"`.
 - Why should you filter at the vector DB level and not after retrieval?
 - What is the difference between `match: { value }` and `match: { any }` in Qdrant filters?
 - What happens if no documentIds are passed — what should the system do?
+
+### File Uploads
+- Why can't you send a file as JSON? What encoding is used instead?
+- What does `multipart/form-data` mean and how does the server detect it?
+- Why is a temp file needed when uploading a PDF? Can you pass the File object directly to PDFLoader?
+- Why use `finally` for temp file cleanup instead of putting `unlinkSync` after the return?
 
 ### Production Concerns
 - How would you scale the ingestion pipeline for large files?
