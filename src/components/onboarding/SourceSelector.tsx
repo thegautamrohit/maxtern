@@ -11,7 +11,7 @@ import GitHubInput from "./GitHubInput";
 type SourceType = "pdf" | "website" | "github" | null;
 
 type SourceSelectorProps = {
-  onIngest: (type: "pdf" | "website" | "github", source: string, branch?: string) => void;
+  onIngest: (type: "pdf" | "website" | "github", source: string, branch?: string, file?: File) => void;
   onSkip: () => void;
   disabled?: boolean;
 };
@@ -56,7 +56,7 @@ export default function SourceSelector({ onIngest, onSkip, disabled }: SourceSel
       {selected === "pdf" && (
         <div className="w-full">
           <PDFUpload
-            onIngest={(source) => onIngest("pdf", source)}
+            onIngest={(source, file) => onIngest("pdf", source, undefined, file)}
             disabled={disabled}
           />
         </div>
