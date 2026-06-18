@@ -32,14 +32,27 @@ export default function ChatWindow({
     type: "pdf" | "website" | "github",
     source: string,
     branch?: string,
+    file?: File,
   ) => {
     setIngesting(true);
     try {
-      const res = await fetch("/api/ingest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, source, branch }),
-      });
+      let res: Response;
+
+      if (type === "pdf" && file) {
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("type", type);
+        res = await fetch("/api/ingest", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        res = await fetch("/api/ingest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, source, branch }),
+        });
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Ingestion failed");
 
