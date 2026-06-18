@@ -1,6 +1,6 @@
 # Maxtern — Project State
 
-Last updated: 2026-06-14
+Last updated: 2026-06-17
 
 ---
 
@@ -593,11 +593,28 @@ type TokenUsage = {
 - Qdrant filter: `match: { any: documentIds }` — only session's chunks searched
 - No documentIds → general LLM answer (no retrieval)
 
+### Conversation History
+- `session.messages` passed from `ChatWindow` → `/api/query`
+- Route converts `Message[]` → `HumanMessage[]` / `AIMessage[]` (LangChain types)
+- `generateAnswer` accepts `BaseMessage[]` — passed to both `qaPrompt` and `generalPrompt`
+- Prompts use `ChatPromptTemplate` + `MessagesPlaceholder("history")` — proper multi-turn
+
+### Session Persistence
+- `sessions` + `activeChatId` synced to `localStorage` via `useEffect` in `ChatPage`
+- Loaded on mount — `hydrated` flag prevents SSR/client flash
+- `createdAt` Date serialization handled — `new Date(s.createdAt)` on parse
+
+### PDF Upload
+- File picker (`<input type="file">`) instead of path input
+- Frontend sends `FormData` (multipart) — server detects via `Content-Type` header
+- Server saves to `/tmp/uuid.pdf` → `ingestDocument` → `unlinkSync` cleanup in `finally`
+
 ### UX Flow (current)
 - No blocking source selector screen — chat starts immediately
 - Paperclip button in input opens bottom Sheet with SourceSelector
 - Source badge shown at top after ingest — clickable to change source
 - Dark/light theme toggle in sidebar footer
+- Markdown rendered in assistant messages via `react-markdown`
 
 ---
 
