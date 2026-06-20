@@ -429,7 +429,12 @@ Combine dense vectors (semantic) with sparse vectors (BM25/keyword). Useful for 
 LLM generates 3–5 sub-queries from the original query. Each retrieved independently. Results merged and de-duplicated. Better coverage for complex questions.
 
 **CRAG (Corrective RAG)**
-After retrieval, evaluate chunk relevance scores. If scores are low (poor retrieval), retry with a reformulated query before generating the answer.
+After retrieval, evaluate chunk relevance scores. If scores are low, supplement with web search (Tavily, DuckDuckGo). Three paths based on score:
+- Score high → generate directly
+- Score medium → web search to supplement retrieved chunks, then generate
+- Score very low → discard retrieved chunks, rely solely on web search
+
+Note: CRAG requires web search — which is a form of tool calling. Implement after Tool Calling (V3) is in place, or use a dedicated search API (Tavily) as a one-off integration.
 
 **Queue-based Ingestion**
 BullMQ + Redis for async ingestion. Large PDFs and GitHub repos can take minutes — move to background jobs with status polling.
@@ -447,6 +452,25 @@ data: [DONE]                                         ← stream end signal
 Flow: retrieval runs first → debug event sent → LLM streams tokens → [DONE].
 
 Deferred to post-V2 — implement alongside BullMQ queues so long-running ingestion jobs and streaming query responses share the same async infrastructure. Frontend will use `fetch` with `ReadableStream` to consume the SSE stream.
+
+**Cross-Encoder Reranker (post Hybrid Retrieval)**
+After RRF fusion, pass top-N candidates through a cross-encoder model (Cohere Rerank, BGE-Reranker) that scores each query-chunk pair with full attention — more accurate than vector similarity alone. Truncate to final top-k before generation.
+
+Flow:
+```
+Dense → top-20
+Sparse → top-20
+  ↓
+RRF → top-30 candidates
+  ↓
+Cross-encoder reranker → re-score all 30
+  ↓
+Truncate → top-5 → generation
+```
+
+Deferred to V3/V4 — implement after Hybrid Retrieval is stable.
+
+---
 
 ## V3 — Agentic Capabilities
 

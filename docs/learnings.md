@@ -577,6 +577,74 @@ When a node is skipped (e.g., retriever skipped on no-RAG path), its state field
 
 ---
 
+## 19. Hybrid Retrieval — Dense + Sparse (BM25)
+
+### The problem with dense-only retrieval
+Dense vector search finds semantically similar chunks — it understands meaning and synonyms. But it misses exact terms: API names, error codes, function names, version numbers.
+
+Query: `"TypeError: Cannot read properties of undefined"` — dense search returns "error handling" and "null checks" chunks (semantically similar) but may miss the exact error string. BM25 finds it directly.
+
+### BM25 — how it works
+BM25 is a keyword scoring algorithm — no neural network, pure math.
+
+**TF (Term Frequency):** How many times does a word appear in a chunk? More = more relevant.
+
+**IDF (Inverse Document Frequency):** How many documents contain this word? Common words ("is", "the", "a") appear everywhere — low IDF, low weight. Rare words ("JWT", "TypeError") — high IDF, high weight.
+
+BM25 combines TF × IDF with length normalization → sparse vector.
+
+### Dense vs Sparse
+
+| | Dense | Sparse (BM25) |
+|---|---|---|
+| How | Neural network embedding | TF-IDF math |
+| Good at | Meaning, synonyms, paraphrasing | Exact terms, API names, error codes |
+| Misses | Exact keyword matches | Semantic meaning |
+| Vector format | 768 floats (all non-zero) | `{ indices: [...], values: [...] }` (mostly zero) |
+
+### Sparse vector format
+Dense: `[0.1, 0.3, 0.0, 0.8, ...]` — 768 numbers, all present.
+
+Sparse: `{ indices: [42, 1337, 8901], values: [0.9, 0.6, 0.4] }` — only non-zero positions stored. A chunk uses only a small subset of the full vocabulary — storing zeros is wasteful. Sparse format stores only meaningful positions.
+
+### RRF — Reciprocal Rank Fusion
+Dense search returns top-20 ranked results. Sparse search returns top-20 ranked results (different order). RRF merges both lists:
+
+```
+RRF score = 1/(k + rank_dense) + 1/(k + rank_sparse)
+```
+
+Where `k = 60` (smoothing constant). A chunk that appears high in **both** lists gets a very high RRF score. A chunk that appears in only one list scores lower.
+
+This means: chunks relevant by both meaning AND keywords float to the top.
+
+### Qdrant hybrid search
+Qdrant natively supports storing two vectors per point:
+
+```
+point:
+  id: "uuid"
+  vector:
+    dense: [0.1, 0.3, ...]          ← 768 dims
+    sparse: { indices, values }      ← BM25
+  payload: { chunkId, documentId, sourceType }
+```
+
+At query time, Qdrant runs both searches simultaneously and applies RRF internally.
+
+### What changes in the codebase
+- **Qdrant collection** — must be recreated with both `dense` and `sparse` vector config
+- **Ingestion** — generate BM25 sparse vector per chunk alongside dense embedding, store both
+- **Retriever** — query time: generate dense embedding + BM25 sparse vector, run hybrid search
+
+### Cross-encoder reranker (future — V3/V4)
+After RRF gives top-30 candidates, a cross-encoder model (Cohere Rerank, BGE-Reranker) re-scores each query-chunk pair with full attention — more accurate than vector similarity. Truncate to final top-5 before generation. Deferred — implement after Hybrid Retrieval is stable.
+
+### The answer in one go
+> "Dense retrieval finds semantically similar chunks but misses exact keyword matches. BM25 sparse retrieval scores chunks by keyword frequency (TF-IDF) and finds exact terms but misses semantic meaning. Hybrid retrieval combines both — Qdrant stores a dense and a sparse vector per chunk, runs both searches at query time, and merges results using RRF (Reciprocal Rank Fusion). Chunks that rank high in both lists float to the top. This gives best-of-both-worlds retrieval — meaning AND keywords."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
@@ -617,6 +685,17 @@ When a node is skipped (e.g., retriever skipped on no-RAG path), its state field
 - What does `multipart/form-data` mean and how does the server detect it?
 - Why is a temp file needed when uploading a PDF? Can you pass the File object directly to PDFLoader?
 - Why use `finally` for temp file cleanup instead of putting `unlinkSync` after the return?
+
+### Hybrid Retrieval
+- What is the limitation of dense-only vector search?
+- What does BM25 stand for and how does it score a chunk?
+- What is TF-IDF and why do common words get low weight?
+- What is a sparse vector? How is it different from a dense vector in format?
+- What is RRF and how does it merge two ranked lists?
+- Why does a chunk ranking high in both dense and sparse lists get a higher RRF score?
+- What changes are needed in Qdrant collection, ingestion, and retrieval for hybrid search?
+- What is a cross-encoder reranker and how does it differ from vector similarity scoring?
+- When would you use a reranker vs relying on RRF alone?
 
 ### LangGraph
 - What is LangGraph and why use it over a linear pipeline?
