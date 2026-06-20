@@ -120,6 +120,12 @@ src/
     embedder.ts                     ✅ Done
   workflows/
     ingest.ts                       ✅ Done
+    query.ts                        ✅ Done (updated — compiledGraph.invoke)
+    graph/
+      state.ts                      ✅ Done
+      nodes.ts                      ✅ Done
+      edges.ts                      ✅ Done
+      graph.ts                      ✅ Done
   retrieval/
     retrievers/
       semantic-retriever.ts         ✅ Done
@@ -389,7 +395,7 @@ Output: { "answer": "...", "debug": {} }
 ### Phase 3 — V2
 | # | Component | Status |
 |---|---|---|
-| 16 | LangGraph | 🔴 Pending |
+| 16 | LangGraph | ✅ Done |
 | 17 | Hybrid Retrieval | 🔴 Pending |
 | 18 | CRAG | 🔴 Pending |
 

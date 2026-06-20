@@ -516,6 +516,67 @@ try {
 
 ---
 
+## 18. LangGraph — replacing a linear pipeline with a graph
+
+### Why LangGraph?
+A linear pipeline (`query → analyzer → retriever → LLM`) cannot handle retry logic, conditional routing, or loops without turning into a deeply nested, hard-to-test god function. Adding CRAG to `query.ts` would mean a `while` loop with manual state tracking — every new feature adds more nesting.
+
+LangGraph models the pipeline as a **graph** — nodes do work, edges define flow, conditional edges make runtime decisions. Each concern is isolated and independently testable.
+
+### Three core concepts
+
+**State** — a shared object that flows through the entire graph. Every node reads from it and returns a partial update. LangGraph merges the update — nodes never mutate state directly.
+
+```typescript
+const GraphState = Annotation.Root({
+  query: Annotation<string>(),
+  chunks: Annotation<RetrievedChunk[]>({ reducer: (p, c) => c, default: () => [] }),
+  attempts: Annotation<number>({ reducer: (p, c) => c, default: () => 0 }),
+  // ...
+})
+```
+
+**Nodes** — async functions that take state and return a partial update:
+```typescript
+const retrieverNode = async (state: GraphStateType) => {
+  const chunks = await retrievalRouter(state.strategy, state.query, state.documentIds)
+  return { chunks, attempts: state.attempts + 1 }
+}
+```
+
+**Conditional edges** — functions that read state and return a string key, mapped to the next node:
+```typescript
+const routeAfterEval = (state: GraphStateType) => {
+  if (state.score < 0.5 && state.attempts < 3) return "retry"
+  return "generate"
+}
+```
+
+### Builder pattern — why method chaining matters
+LangGraph uses a builder pattern for TypeScript type safety. Calling `addNode` and `addEdge` as separate statements loses type tracking — TypeScript doesn't know which nodes exist. Method chaining fixes this:
+
+```typescript
+export const compiledGraph = new StateGraph(GraphState)
+  .addNode("analyzer", analyzerNode)
+  .addNode("retriever", retrieverNode)
+  // ...
+  .compile()
+```
+
+### Termination condition in retry loops
+Any retry loop in LangGraph **must** have a termination condition in state. Without `attempts < 3`, the evaluator returns `"retry"` forever — infinite loop. The counter must live in state so each node that increments it persists the value across iterations.
+
+### Derived state — don't store what you can compute
+`isRagUsed` does not need to be a state field. It is always derivable: `chunks.length > 0`. Storing redundant computed values in state adds bloat and potential inconsistency.
+
+### Default annotations — undefined vs empty
+When a node is skipped (e.g., retriever skipped on no-RAG path), its state fields are never set — they remain `undefined`. If downstream code calls `.map()` on an undefined field, it crashes. Fix: add `default: () => []` to fields that should always have a safe fallback.
+
+### The answer in one go
+> "LangGraph replaces a linear pipeline with a graph of nodes and edges. State is a shared object that flows through nodes — each node returns a partial update, never mutates directly. Conditional edges make runtime routing decisions (RAG vs no-RAG, retry vs generate). The builder pattern with method chaining is required for TypeScript to track node names correctly. Any retry loop needs a counter in state as a termination condition, and fields that may be skipped need default values to prevent undefined crashes downstream."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
@@ -556,6 +617,17 @@ try {
 - What does `multipart/form-data` mean and how does the server detect it?
 - Why is a temp file needed when uploading a PDF? Can you pass the File object directly to PDFLoader?
 - Why use `finally` for temp file cleanup instead of putting `unlinkSync` after the return?
+
+### LangGraph
+- What is LangGraph and why use it over a linear pipeline?
+- What are the three core concepts in LangGraph?
+- What does a node return — full state or partial update?
+- Why should nodes never mutate state directly?
+- What is a conditional edge and how does it differ from a normal edge?
+- Why does LangGraph require method chaining for TypeScript type safety?
+- Why does a retry loop need a counter in state? What happens without it?
+- When should you add a field to state vs derive it from existing state?
+- What happens to state fields that belong to skipped nodes? How do you handle it?
 
 ### Production Concerns
 - How would you scale the ingestion pipeline for large files?

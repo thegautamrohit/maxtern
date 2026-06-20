@@ -18,7 +18,7 @@ export async function generateAnswer(
 
   const history = transformedHistory ?? [];
 
-  if (chunks.length === 0) {
+  if (chunks && chunks?.length === 0) {
     const chain = generalPrompt.pipe(LLM).pipe(parser);
     return chain.invoke({ userQuery: query, history });
   }
@@ -27,7 +27,7 @@ export async function generateAnswer(
 
   return chain.invoke({
     userQuery: query,
-    context: chunks.map((chunk) => chunk.content).join("\n"),
+    context: chunks?.map((chunk) => chunk.content).join("\n"),
     history,
   });
 }
