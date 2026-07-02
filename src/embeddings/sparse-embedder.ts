@@ -27,11 +27,19 @@ export const computeSparseVector = (text: string): SparseVector => {
     }
   }
 
+  // merge colliding indices by summing their values
+  const indexMap = new Map<number, number>();
+
+  tfMap.forEach((value, key) => {
+    const idx = hashWord(key);
+    indexMap.set(idx, (indexMap.get(idx) ?? 0) + value);
+  });
+
   const indices: number[] = [];
   const values: number[] = [];
 
-  tfMap.forEach((value, key) => {
-    indices.push(hashWord(key));
+  indexMap.forEach((value, idx) => {
+    indices.push(idx);
     values.push(value);
   });
 

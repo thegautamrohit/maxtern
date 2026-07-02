@@ -14,9 +14,7 @@ async function semanticRetrieval(
   const filter =
     documentIds && documentIds.length > 0
       ? {
-          filter: {
-            must: [{ key: "documentId", match: { any: documentIds } }],
-          },
+          must: [{ key: "documentId", match: { any: documentIds } }],
         }
       : undefined;
 
