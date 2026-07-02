@@ -9,8 +9,13 @@ export async function ensureCollections() {
 
   await qdrant.createCollection("chunks", {
     vectors: {
-      size: 768,
-      distance: "Cosine",
+      dense: {
+        size: 768,
+        distance: "Cosine",
+      },
+    },
+    sparse_vectors: {
+      sparse: {},
     },
   });
   console.log("Collection 'documents' created successfully.");

@@ -49,6 +49,11 @@ interface DebugInfo {
   tokens?: TokenUsage; // LLM token + cost breakdown
 }
 
+interface SparseVector {
+  indices: number[];
+  values: number[];
+}
+
 export type {
   Document,
   Chunk,
@@ -57,4 +62,5 @@ export type {
   DebugInfo,
   RetrievedChunkDebug,
   TokenUsage,
+  SparseVector,
 };

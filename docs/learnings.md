@@ -618,8 +618,29 @@ Where `k = 60` (smoothing constant). A chunk that appears high in **both** lists
 
 This means: chunks relevant by both meaning AND keywords float to the top.
 
+### RRF formula — why `1 / (K + index + 1)`
+
+The formula applied per result:
+
+```
+score += 1 / (K + rank)
+```
+
+Where:
+- **rank** is 1-based (1st result = rank 1, not 0). `forEach` gives a 0-based `index` → `index + 1` converts it
+- **K = 60** is a smoothing constant — prevents a single very high rank from dominating. Without K, rank 1 would score `1/1 = 1.0`, rank 2 would score `1/2 = 0.5` — a huge gap. With K=60, rank 1 scores `1/61 ≈ 0.016`, rank 2 scores `1/62 ≈ 0.016` — differences are compressed
+- **Numerator is always 1** — RRF only cares about rank position, not about the raw similarity score (cosine similarity or BM25 score). A score of 0.99 at rank 5 and a score of 0.51 at rank 5 both contribute `1/(60+5)`. Raw scores are discarded
+
+Why discard raw scores? Dense and sparse scores are not on the same scale — cosine similarity (0–1) and BM25 scores are incomparable. Using rank makes the merge scale-invariant.
+
+A chunk appearing in both lists accumulates two contributions:
+```
+total = 1/(K + rank_dense) + 1/(K + rank_sparse)
+```
+This is why chunks relevant to both meaning AND keywords float to the top.
+
 ### Qdrant hybrid search
-Qdrant natively supports storing two vectors per point:
+Qdrant supports storing two named vectors per point:
 
 ```
 point:
@@ -630,7 +651,68 @@ point:
   payload: { chunkId, documentId, sourceType }
 ```
 
-At query time, Qdrant runs both searches simultaneously and applies RRF internally.
+At query time, we run two **separate** Qdrant searches — one against `"dense"`, one against `"sparse"` — and apply RRF ourselves in code. Qdrant does not merge or apply RRF automatically when using the JS client's `search()` method.
+
+### Why named vectors are required in Qdrant
+
+When a collection has only one vector, Qdrant knows which one to use — no ambiguity.
+
+When a collection has **two vectors** (dense + sparse), Qdrant needs a name to refer to each one — at collection creation, at ingestion, and at search time.
+
+**Collection creation:**
+```typescript
+vectors: {
+  dense: { size: 768, distance: "Cosine" }  // named "dense"
+},
+sparse_vectors: {
+  sparse: {}   // named "sparse"
+}
+```
+
+**Ingestion — upsert with named vectors:**
+```typescript
+vector: {
+  dense: [0.1, 0.3, ...],             // stored under "dense"
+  sparse: { indices: [...], values: [...] }  // stored under "sparse"
+}
+```
+
+**Search — refer by name:**
+```typescript
+// dense search
+qdrant.search("chunks", {
+  vector: { name: "dense", vector: queryDenseVec }
+})
+
+// sparse search
+qdrant.search("chunks", {
+  vector: { name: "sparse", vector: querySparseVec }
+})
+```
+
+Without names, Qdrant cannot distinguish which vector to use for which operation. The name is just a string key — `"dense"` and `"sparse"` are convention, not reserved words.
+
+### `with_payload` — JS client vs HTTP API behavior
+
+Qdrant HTTP API default for `with_payload` is **`false`** — payload must be explicitly requested, otherwise only `id` and `score` are returned.
+
+Qdrant **JS client** default for `with_payload` is **`true`** — payload is included automatically, no need to specify it explicitly.
+
+```typescript
+// JS client — both are equivalent
+qdrant.search("chunks", { vector: { name: "dense", vector: vec }, limit: 5 })
+qdrant.search("chunks", { vector: { name: "dense", vector: vec }, limit: 5, with_payload: true })
+```
+
+This is a common gotcha — Qdrant docs are written against the HTTP API (default false), but the JS client sets it to true by default for developer convenience. If you ever use the HTTP API directly, `with_payload: true` must be passed explicitly.
+
+### sourceType map must cover both results
+
+After RRF, `topChunks` contains IDs from both dense and sparse searches. Some IDs may only appear in sparse results — not in dense. If the sourceType map is built only from `denseResults`, those sparse-only chunks will have no sourceType and get filtered out silently.
+
+Fix: build the sourceType map from `[...denseResults, ...sparseResults]` — covers all possible IDs in `topChunks`.
+
+Similarly, score should come from `rrfScores` (the Map built during RRF), not from `denseResults`'s `item.score`. Qdrant's raw cosine/BM25 scores are used during the two searches but discarded after RRF — only RRF scores are meaningful at output time.
 
 ### What changes in the codebase
 - **Qdrant collection** — must be recreated with both `dense` and `sparse` vector config
@@ -696,6 +778,7 @@ After RRF gives top-30 candidates, a cross-encoder model (Cohere Rerank, BGE-Rer
 - What changes are needed in Qdrant collection, ingestion, and retrieval for hybrid search?
 - What is a cross-encoder reranker and how does it differ from vector similarity scoring?
 - When would you use a reranker vs relying on RRF alone?
+- What is the default behavior of `with_payload` in Qdrant JS client vs HTTP API? Why does it differ?
 
 ### LangGraph
 - What is LangGraph and why use it over a linear pipeline?

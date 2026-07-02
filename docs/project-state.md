@@ -1,6 +1,6 @@
 # Maxtern — Project State
 
-Last updated: 2026-06-17
+Last updated: 2026-06-30
 
 ---
 
@@ -81,7 +81,9 @@ createdAt  DateTime @default(now())
 
 ```
 id      String   (same as PostgreSQL Chunk.id)
-vector  float[]  (768 dims — nomic-embed-text, Cosine similarity)
+vectors:
+  dense   float[]             (768 dims — nomic-embed-text, Cosine)
+  sparse  { indices, values } (BM25 TF-IDF keyword vector)
 payload:
   chunkId     String   (PostgreSQL Chunk.id — for content lookup)
   documentId  String   (PostgreSQL Document.id)
@@ -89,6 +91,8 @@ payload:
 ```
 
 **Key design decision:** Qdrant stores only vectors + reference IDs. Content lives exclusively in PostgreSQL. Query time: Qdrant returns chunkIds → PostgreSQL fetches content.
+
+**Named vectors:** Both dense and sparse are stored as named vectors (`vector: { dense: [...], sparse: {...} }`). Required when storing multiple vector types per point.
 
 **Future:** `userId` will be added to Qdrant payload for per-user document isolation (multi-tenancy via Qdrant filter).
 
@@ -118,6 +122,7 @@ src/
     markdown-chunker.ts             ✅ Done
   embeddings/
     embedder.ts                     ✅ Done
+    sparse-embedder.ts              ✅ Done
   workflows/
     ingest.ts                       ✅ Done
     query.ts                        ✅ Done (updated — compiledGraph.invoke)
@@ -255,6 +260,17 @@ Uses LangChain `OllamaEmbeddings` with `nomic-embed-text` model (768 dims).
 
 ---
 
+### `src/embeddings/sparse-embedder.ts`
+
+BM25-style sparse vector generator using the `natural` library.
+
+- `computeSparseVector(text)` → `{ indices: number[], values: number[] }`
+- Process: tokenize → filter stopwords → count term frequency → hash words to indices → return sparse format
+- Called during ingestion (per chunk) and at query time (per query)
+- Sparse format stores only non-zero positions — memory efficient for large vocabularies
+
+---
+
 ### `src/workflows/ingest.ts`
 
 Main ingestion orchestrator. Entry point for all document ingestion.
@@ -281,14 +297,16 @@ GitHub returns `Document[]` → looped. PDF/Website return single `Document` →
 
 ### `src/retrieval/retrievers/semantic-retriever.ts`
 
-Accepts a query string, embeds it, searches Qdrant for top-5 similar chunks, fetches content from PostgreSQL, and returns `RetrievedChunk[]`.
+Hybrid retriever — combines dense (semantic) and sparse (BM25 keyword) search, merges results via RRF, returns top-5 `RetrievedChunk[]`.
 
 Key details:
-- `embedText(query)` → 768-dim vector
-- `qdrant.search("chunks", { vector, limit: 5 })` → top 5 points
-- chunkIds extracted from Qdrant payload → `prisma.chunk.findMany`
-- Score + sourceType mapped via a `Map` for O(1) lookup (not filter per chunk)
-- `RetrievedChunk` type added to `src/core/types.ts`
+- `embedText(query)` → 768-dim dense vector
+- `computeSparseVector(query)` → BM25 sparse vector `{ indices, values }`
+- Both searches run against named vectors: `{ name: "dense", vector: ... }` and `{ name: "sparse", vector: ... }`, `limit: 20` each, filtered by `documentIds`
+- RRF merge: `score += 1 / (K + rank + 1)` where K=60 — accumulates across both result lists
+- Top-5 chunk IDs by RRF score → `prisma.chunk.findMany`
+- sourceType map built from both dense + sparse results (covers sparse-only results)
+- Final score is RRF score, not Qdrant's raw cosine/BM25 score
 
 ---
 
@@ -396,7 +414,7 @@ Output: { "answer": "...", "debug": {} }
 | # | Component | Status |
 |---|---|---|
 | 16 | LangGraph | ✅ Done |
-| 17 | Hybrid Retrieval | 🔴 Pending |
+| 17 | Hybrid Retrieval | ✅ Done |
 | 18 | CRAG | 🔴 Pending |
 
 ### Phase 4 — V3

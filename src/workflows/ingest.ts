@@ -8,6 +8,7 @@ import { markdownChunk } from "@/chunking/markdown-chunker";
 import { recursiveChunk } from "@/chunking/recursive-chunker";
 import { embedTexts } from "@/embeddings/embedder";
 import { ensureCollections } from "@/vector/collection";
+import { computeSparseVector } from "@/embeddings/sparse-embedder";
 
 async function processSingleDocument(
   doc: Document,
@@ -24,9 +25,19 @@ async function processSingleDocument(
     const vectors = await embedTexts(
       chunks?.map((chunk: Chunk) => chunk.content) || [],
     );
+
+    const sparseVectors = chunks?.map((chunk) =>
+      computeSparseVector(chunk.content)
+    );
+
     await Promise.all(
       chunks?.map(async (chunk: Chunk, index: number) => {
-        await storeChunk(chunk, vectors[index], storedDocId);
+        await storeChunk(
+          chunk,
+          vectors[index],
+          storedDocId,
+          sparseVectors[index],
+        );
       }),
     );
 

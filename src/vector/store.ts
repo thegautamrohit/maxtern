@@ -1,11 +1,12 @@
 import qdrant from "./client";
 import prisma from "../db/client";
-import { Chunk, Document } from "@/../src/core/types";
+import { Chunk, Document, SparseVector } from "@/../src/core/types";
 
 export async function storeChunk(
   chunk: Chunk,
   vector: number[],
   documentid: string,
+  sparseVector: SparseVector,
 ) {
   // Store in Postgres
 
@@ -24,7 +25,7 @@ export async function storeChunk(
     points: [
       {
         id: savedChunk.id,
-        vector: vector,
+        vector: { dense: vector, sparse: sparseVector },
         payload: {
           chunkId: savedChunk.id,
           documentId: documentid,

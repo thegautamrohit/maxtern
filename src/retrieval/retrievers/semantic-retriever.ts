@@ -2,46 +2,72 @@ import qdrant from "@/vector/client";
 import prisma from "@/db/client";
 import { RetrievedChunk } from "@/core/types";
 import { embedText } from "@/embeddings/embedder";
+import { computeSparseVector } from "@/embeddings/sparse-embedder";
 
 async function semanticRetrieval(
   query: string,
   documentIds?: string[],
 ): Promise<RetrievedChunk[]> {
-  const queryVector = await embedText(query);
+  const queryDenseVector = await embedText(query);
+  const querySparseVector = computeSparseVector(query);
 
-  const searchResults = await qdrant.search("chunks", {
-    vector: queryVector,
-    limit: 5,
-         ...(documentIds && documentIds.length > 0
-      ? {                                                                                                                                                        
+  const filter =
+    documentIds && documentIds.length > 0
+      ? {
           filter: {
-            must: [{ key: "documentId", match: { any: documentIds } }],                                                                                          
-          },                                                                                                                                                     
+            must: [{ key: "documentId", match: { any: documentIds } }],
+          },
         }
-      : {}), 
+      : undefined;
+
+  const denseResults = await qdrant.search("chunks", {
+    vector: { name: "dense", vector: queryDenseVector },
+    limit: 20,
+    filter,
   });
 
-  const retrievedChunkIds = searchResults
-    .map((item) => item.payload?.chunkId)
-    .filter((v): v is string => !!v);
+  const sparseResults = await qdrant.search("chunks", {
+    vector: { name: "sparse", vector: querySparseVector },
+    limit: 20,
+    filter
+  });
+
+  // RRF (Reciprocal Rank Fusion) Implementation, (for ranking of chunks from both searches)
+  const K = 60;
+  const rrfScores = new Map<string, number>();
+
+  denseResults.forEach((item, index) => {
+    // treating index as rank here
+    const id = item.payload?.chunkId as string;
+    rrfScores.set(id, (rrfScores.get(id) ?? 0) + 1 / (K + index + 1));
+  });
+
+  sparseResults.forEach((item, index) => {
+    const id = item?.payload?.chunkId as string;
+    rrfScores.set(id, (rrfScores?.get(id) ?? 0) + 1 / (K + index + 1));
+  });
+
+  // Sort by RRF scores to get top chunks
+  const topChunks = [...rrfScores.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([id]) => id);
 
   const retrievedChunks = await prisma.chunk.findMany({
     where: {
-      id: { in: retrievedChunkIds },
+      id: { in: topChunks },
     },
   });
 
-  const retrievedChunkSourceAndScore = new Map<
+  const retrievedChunkSource = new Map<
     string,
     {
-      score: number;
       sourceType: "pdf" | "website" | "github";
     }
   >(
-    searchResults.map((item) => [
+    [ ...denseResults, ...sparseResults ].map((item) => [
       item.payload?.chunkId as string,
       {
-        score: item.score as number,
         sourceType: item.payload?.sourceType as "pdf" | "website" | "github",
       },
     ]),
@@ -49,9 +75,10 @@ async function semanticRetrieval(
 
   return retrievedChunks
     .map((chunk) => {
-      const chunkMetadata = retrievedChunkSourceAndScore.get(chunk.id);
+      const chunkSource = retrievedChunkSource.get(chunk.id);
+      const chunkScore = rrfScores.get(chunk.id);
 
-      if (!chunkMetadata) {
+      if (!chunkSource || !chunkScore) {
         return null;
       }
 
@@ -60,8 +87,8 @@ async function semanticRetrieval(
         documentId: chunk.documentId,
         content: chunk.content,
         chunkIndex: chunk.chunkIndex,
-        score: chunkMetadata.score,
-        sourceType: chunkMetadata.sourceType,
+        score: chunkScore,
+        sourceType: chunkSource.sourceType,
       };
     })
     .filter((chunk): chunk is RetrievedChunk => chunk !== null);
