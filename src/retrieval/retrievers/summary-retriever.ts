@@ -10,7 +10,10 @@ async function summaryRetriever(
   const searchVector = await embedText(query);
   const searchResults = await qdrant.search("chunks", {
     limit: 20,
-    vector: searchVector,
+    vector: {
+      name: "dense",
+      vector: searchVector,
+    },
     ...(documentIds && documentIds.length > 0
       ? {
           filter: {

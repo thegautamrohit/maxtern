@@ -722,8 +722,38 @@ Similarly, score should come from `rrfScores` (the Map built during RRF), not fr
 ### Cross-encoder reranker (future — V3/V4)
 After RRF gives top-30 candidates, a cross-encoder model (Cohere Rerank, BGE-Reranker) re-scores each query-chunk pair with full attention — more accurate than vector similarity. Truncate to final top-5 before generation. Deferred — implement after Hybrid Retrieval is stable.
 
+### Proven difference — dense vs hybrid on a codebase query
+
+Query: `"computeSparseVector indices value"` against the maxtern codebase ingested as a GitHub repo.
+
+**Dense result:**
+> "The indices are hash values of tokens (words) filtered for stopwords, and the values are term frequencies."
+
+Chunks retrieved: [1, 0, 44, 47, 43] — general explanatory content that semantically talks about sparse vectors and term frequencies.
+
+**Hybrid result:**
+> "In the `computeSparseVector` function, indices are hash values of tokens (words) and values are term frequencies (integer counts of how many times each token appears). The function generates these by tokenizing text, filtering out stopwords, counting term frequencies, and then hashing each unique token to create indices."
+
+Chunks retrieved: [42, 8, 10, 0, 0] — chunk 42 is the actual `sparse-embedder.ts` source file, surfaced because the exact token `computeSparseVector` appears in it.
+
+**Why this happened:**
+- Dense understood the semantic meaning of the query — found chunks that explain the concept of sparse vectors
+- Sparse found the exact function by token match — `computeSparseVector` as a string exists in the source file
+- Dense deprioritized the source code chunk because code is less semantically "similar" to a natural language query than explanatory text is
+- Hybrid rescued that source chunk and ranked it first
+
+**The rule:**
+```
+Dense  → finds chunks that MEAN the same thing as your query
+Sparse → finds chunks that CONTAIN the exact words in your query
+```
+
+For code-heavy knowledge bases (GitHub repos, API docs), hybrid retrieval wins significantly over dense-only — especially when querying exact function names, class names, or parameter names that dense has no special training signal for.
+
+For general concept queries on focused documents (Wikipedia article on RAG), both approaches return nearly identical results — the document is semantically uniform so dense already finds everything relevant.
+
 ### The answer in one go
-> "Dense retrieval finds semantically similar chunks but misses exact keyword matches. BM25 sparse retrieval scores chunks by keyword frequency (TF-IDF) and finds exact terms but misses semantic meaning. Hybrid retrieval combines both — Qdrant stores a dense and a sparse vector per chunk, runs both searches at query time, and merges results using RRF (Reciprocal Rank Fusion). Chunks that rank high in both lists float to the top. This gives best-of-both-worlds retrieval — meaning AND keywords."
+> "Dense retrieval finds semantically similar chunks but misses exact keyword matches. BM25 sparse retrieval scores chunks by keyword frequency (TF-IDF) and finds exact terms but misses semantic meaning. Hybrid retrieval combines both — Qdrant stores a dense and a sparse vector per chunk, runs both searches at query time, and merges results using RRF (Reciprocal Rank Fusion). Chunks that rank high in both lists float to the top. This gives best-of-both-worlds retrieval — meaning AND keywords. The difference is most visible on code repositories with exact function/class names, and least visible on semantically uniform documents like encyclopedia articles."
 
 ---
 
