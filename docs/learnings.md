@@ -605,7 +605,106 @@ BM25 combines TF × IDF with length normalization → sparse vector.
 ### Sparse vector format
 Dense: `[0.1, 0.3, 0.0, 0.8, ...]` — 768 numbers, all present.
 
-Sparse: `{ indices: [42, 1337, 8901], values: [0.9, 0.6, 0.4] }` — only non-zero positions stored. A chunk uses only a small subset of the full vocabulary — storing zeros is wasteful. Sparse format stores only meaningful positions.
+Sparse: `{ indices: [42, 1337, 8901], values: [3, 2, 1] }` — only non-zero positions stored. A chunk uses only a small subset of the full vocabulary — storing zeros is wasteful. Sparse format stores only meaningful positions.
+
+Reading a sparse vector:
+```
+indices: [42,           1337,         8901       ]
+values:  [3,            2,            1          ]
+          ↑              ↑             ↑
+     word "apple"   word "juice"  word "recipe"
+     appeared 3x    appeared 2x   appeared 1x
+```
+
+`42`, `1337`, `8901` are hash values of the actual words — the word itself is not stored, just its unique number. `values` are term frequencies — how many times that word appeared in the text.
+
+### Dot product — how sparse vectors are compared
+
+Sparse vectors are always compared using dot product. There is no other option — unlike dense vectors where you choose Cosine, Dot, or Euclid.
+
+Dot product on sparse vectors means: **only words that appear in both the query and the chunk contribute to the score. Everything else is ignored.**
+
+Example — query: `"apple juice recipe"`:
+```
+Query sparse:   { indices: [42, 1337, 8901], values: [1, 1, 1] }
+
+Chunk A (apple juice article):
+  indices: [42, 1337, 8901, 500]
+  values:  [3,  2,    1,    1  ]
+
+Chunk B (car repair manual):
+  indices: [77, 200, 300]
+  values:  [2,  1,   1  ]
+```
+
+**Chunk A score:**
+```
+index 42   → query:1 × chunkA:3 = 3   ✅ "apple" in both
+index 1337 → query:1 × chunkA:2 = 2   ✅ "juice" in both
+index 8901 → query:1 × chunkA:1 = 1   ✅ "recipe" in both
+index 500  → not in query, skip
+
+score = 3 + 2 + 1 = 6
+```
+
+**Chunk B score:**
+```
+index 77, 200, 300 → none in query, skip
+
+score = 0
+```
+
+Chunk A wins — it contains all three query words multiple times. Chunk B scores zero — no shared words with the query, completely irrelevant regardless of any semantic meaning.
+
+This is why `sparse: {}` has no distance metric in the Qdrant collection config — dot product is hardcoded for sparse vectors, there is nothing to configure.
+
+### `computeSparseVector` — how it works step by step
+
+```ts
+computeSparseVector("Apple Juice Recipe apple")
+```
+
+**Step 1 — Tokenize:** split text into individual words
+```
+"apple juice recipe apple" → ["apple", "juice", "recipe", "apple"]
+```
+
+**Step 2 — Remove stopwords:** drop useless words like "the", "is", "a"
+```
+["apple", "juice", "recipe", "apple"]  ← nothing removed here
+```
+
+**Step 3 — Count term frequency (TF):** how many times each word appeared
+```
+{ apple: 2, juice: 1, recipe: 1 }
+```
+
+**Step 4 — Hash each word to a number:**
+```
+"apple"  → hashWord("apple")  → 42
+"juice"  → hashWord("juice")  → 1337
+"recipe" → hashWord("recipe") → 999
+```
+Same word always produces same number. `% 100000` means max 100,000 possible values — two different words can occasionally get the same number (hash collision).
+
+**Step 5 — Handle collisions:** if two words hash to the same number, sum their counts
+```
+"apple" → 42 → count: 2
+"mango" → 42 → same hash! → count: 2 + 1 = 3  (combined)
+```
+This prevents duplicate indices which Qdrant rejects.
+
+**Step 6 — Return sparse vector:**
+```ts
+{ indices: [42, 1337, 999], values: [2, 1, 1] }
+//           ↑               ↑
+//      word numbers      word counts
+```
+
+**Full flow in one line:**
+```
+text → words → remove stopwords → count each word → hash words to numbers → { indices, values }
+```
 
 ### RRF — Reciprocal Rank Fusion
 Dense search returns top-20 ranked results. Sparse search returns top-20 ranked results (different order). RRF merges both lists:
