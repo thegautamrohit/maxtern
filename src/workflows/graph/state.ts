@@ -10,11 +10,7 @@ export const GraphState = Annotation.Root({
     default: () => [],
   }),
   answer: Annotation<string>(),
-  attempts: Annotation<number>({
-    reducer: (prev, current) => current,
-    default: () => 0,
-  }),
-  score: Annotation<number>(),
+  relevant: Annotation<boolean>(),
   history: Annotation<BaseMessage[]>(),
   documentIds: Annotation<string[]>(),
 });

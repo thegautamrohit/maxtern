@@ -1,10 +1,10 @@
 import { GraphStateType } from "./state";
 
 export const routeAfterEval = (state: GraphStateType) => {
-  const { attempts, score } = state;
+  const { relevant } = state;
 
-  if (score < 0.5 && attempts < 3) {
-    return "retry";
+  if (!relevant) {
+    return "web_search";
   }
 
   return "generate";
