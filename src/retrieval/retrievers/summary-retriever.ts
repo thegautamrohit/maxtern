@@ -1,7 +1,7 @@
 import qdrant from "@/vector/client";
 import prisma from "@/db/client";
 import { embedText } from "@/embeddings/embedder";
-import { RetrievedChunk } from "@/core/types";
+import { RetrievedChunk, SourceType } from "@/core/types";
 
 async function summaryRetriever(
   query: string,
@@ -35,13 +35,13 @@ async function summaryRetriever(
 
   const retrievedChunkSourceAndScore = new Map<
     string,
-    { score: number; sourceType: "pdf" | "website" | "github" }
+    { score: number; sourceType: SourceType }
   >(
     searchResults.map((item) => [
       item.payload?.chunkId as string,
       {
         score: item.score as number,
-        sourceType: item.payload?.sourceType as "pdf" | "website" | "github",
+        sourceType: item.payload?.sourceType as SourceType,
       },
     ]),
   );
