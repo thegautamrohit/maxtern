@@ -123,6 +123,8 @@ src/
   embeddings/
     embedder.ts                     ✅ Done
     sparse-embedder.ts              ✅ Done
+  tools/
+    web-search.ts                       ✅ Done
   workflows/
     ingest.ts                       ✅ Done
     query.ts                        ✅ Done (updated — compiledGraph.invoke)
@@ -415,12 +417,12 @@ Output: { "answer": "...", "debug": {} }
 |---|---|---|
 | 16 | LangGraph | ✅ Done |
 | 17 | Hybrid Retrieval | ✅ Done |
-| 18 | CRAG | 🔴 Pending |
+| 18 | CRAG | ✅ Done |
 
 ### Phase 4 — V3
 | # | Component | Status |
 |---|---|---|
-| 19 | Tool Calling | 🔴 Pending |
+| 19 | Tool Calling | ✅ Done |
 | 20 | MCP Integration | 🔴 Pending |
 | 21 | Agents | 🔴 Pending |
 

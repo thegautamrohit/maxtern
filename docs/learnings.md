@@ -856,6 +856,107 @@ For general concept queries on focused documents (Wikipedia article on RAG), bot
 
 ---
 
+## 20. CRAG — Corrective RAG with Tool Calling
+
+### What is CRAG?
+
+CRAG (Corrective RAG) is a pattern that adds a **quality gate** between retrieval and generation. Instead of blindly passing retrieved chunks to the LLM, CRAG first evaluates whether those chunks are actually relevant to the query. If not, it corrects the context by falling back to an external source (web search) before generating.
+
+### Three confidence states (original paper)
+
+| State | Condition | Action |
+|---|---|---|
+| Correct | High confidence | Use retrieved chunks → generate |
+| Incorrect | Low confidence | Discard chunks → web search → generate |
+| Ambiguous | Medium confidence | Retrieved chunks + web search → generate |
+
+This project implements the binary version (Correct / Incorrect only).
+
+### Why score-based evaluation fails here
+
+The naive approach: average the RRF scores of retrieved chunks and compare to a threshold (`score < 0.5`). This is broken because RRF scores are not relevance scores — they are rank-based:
+
+```
+rank 0 → 1/(60+0+1) = 0.0164
+rank 4 → 1/(60+4+1) = 0.0153
+```
+
+Average is always ~0.015 — always below any reasonable threshold. RRF tells you "which chunk ranked highest" not "is this chunk relevant to the query." Normalizing RRF scores also doesn't help — it just amplifies tiny rank differences into 0–1 range, which is misleading noise.
+
+### LLM as evaluator — the correct approach
+
+The evaluator sends the query + all retrieved chunks to an LLM in a single call and asks: "Is this context sufficient to answer the query?" The LLM reads the actual content and makes a judgment — something a score cannot do.
+
+```typescript
+const chain = evaluationPrompt.pipe(LLM.withStructuredOutput(schema));
+const result = await chain.invoke({ query, chunksContext });
+// result: { relevant: true | false }
+```
+
+Key decisions:
+- **All chunks in one call** — the generator also receives all chunks together, so the evaluator should ask the same question the generator faces
+- **Temperature 0** — deterministic judgment, no creativity needed
+- **Structured output** — `z.object({ relevant: z.boolean() })` prevents free-text responses that need parsing
+
+### Tool definition pattern
+
+A LangChain `tool()` packages a function with a name, description, and Zod schema — the standard format that LLMs use to understand when and how to call a tool:
+
+```typescript
+export const webSearchTool = tool(
+  async ({ query }) => {
+    // implementation
+    return JSON.stringify(results);  // tools must return strings
+  },
+  {
+    name: "web_search",
+    description: "Search the web when the knowledge base doesn't have relevant results",
+    schema: z.object({
+      query: z.string().describe("The search query"),
+    }),
+  }
+);
+```
+
+In Approach 3 (used here), the graph routes to the web search node — the LLM doesn't decide when to call the tool. The tool is still defined properly for consistency and to prepare for full LLM-driven tool calling in the Agents phase.
+
+### Graph changes for CRAG
+
+State additions:
+- `relevant: Annotation<boolean>()` — evaluator output
+- Removed `score` (was RRF average — meaningless) and `attempts` (no more retry loop)
+
+New node — `webSearchNode`:
+- Calls `webSearchTool.invoke({ query })`
+- `JSON.parse` the string result
+- Maps to `RetrievedChunk[]` with `sourceType: "web"`, `chunkId: url`, `score: 1`
+- Returns `{ chunks: webChunks }` — replaces state chunks
+
+New edge:
+```
+evaluator → relevant: false → webSearch → generator
+evaluator → relevant: true  → generator
+```
+
+### `SourceType` — union type extraction
+
+Web results introduced `"web"` as a new source type. Rather than updating `sourceType: "pdf" | "website" | "github"` in three interfaces separately, the union was extracted into a named type:
+
+```typescript
+type SourceType = "pdf" | "website" | "github" | "web";
+```
+
+One place to change, all interfaces stay consistent. `as const` is needed when assigning string literals in mapped objects to prevent TypeScript from widening `"web"` to `string`.
+
+### `{{` and `}}` — escaping braces in LangChain templates
+
+`ChatPromptTemplate.fromMessages` interprets `{word}` as a template variable. A standalone `{` or `}` (e.g., in a JSON example inside the prompt) throws: `"Single '}' in template"`. Escape with double braces: `{{` renders as `{`, `}}` renders as `}` at runtime.
+
+### The answer in one go
+> "CRAG adds a quality gate after retrieval — an LLM evaluates whether retrieved chunks are actually relevant to the query. If not relevant, chunks are discarded and web search is used instead. Score-based evaluation fails because RRF scores are rank-based, not relevance-based. An LLM evaluator reads the actual content and makes a binary judgment. The web search is wrapped in a LangChain `tool()` — a function with name, description, and schema — and the graph routes to it when the evaluator returns false. The generator then receives either vector-retrieved chunks or web search chunks and generates an answer the same way regardless of source."
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture

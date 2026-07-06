@@ -1,7 +1,9 @@
+type SourceType = "pdf" | "website" | "github" | "web";
+
 interface Document {
   title: string;
   content: string;
-  sourceType: "pdf" | "website" | "github";
+  sourceType: SourceType;
   metadata: any;
 }
 
@@ -17,13 +19,13 @@ interface RetrievedChunk {
   content: string;
   chunkIndex: number;
   score: number;
-  sourceType: "pdf" | "website" | "github";
+  sourceType: SourceType;
 }
 
 interface RetrievedChunkDebug {
   chunkId: string;
   documentId: string;
-  sourceType: "pdf" | "website" | "github";
+  sourceType: SourceType;
   sourceTitle: string; // document title from PostgreSQL
   chunkIndex: number; // position within the document
   score: number; // Qdrant similarity score (0–1)
@@ -63,4 +65,5 @@ export type {
   RetrievedChunkDebug,
   TokenUsage,
   SparseVector,
+  SourceType,
 };

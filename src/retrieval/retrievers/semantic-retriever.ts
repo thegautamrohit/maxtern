@@ -1,6 +1,6 @@
 import qdrant from "@/vector/client";
 import prisma from "@/db/client";
-import { RetrievedChunk } from "@/core/types";
+import { RetrievedChunk, SourceType } from "@/core/types";
 import { embedText } from "@/embeddings/embedder";
 import { computeSparseVector } from "@/embeddings/sparse-embedder";
 
@@ -60,13 +60,13 @@ async function semanticRetrieval(
   const retrievedChunkSource = new Map<
     string,
     {
-      sourceType: "pdf" | "website" | "github";
+      sourceType: SourceType;
     }
   >(
     [ ...denseResults, ...sparseResults ].map((item) => [
       item.payload?.chunkId as string,
       {
-        sourceType: item.payload?.sourceType as "pdf" | "website" | "github",
+        sourceType: item.payload?.sourceType as SourceType,
       },
     ]),
   );
