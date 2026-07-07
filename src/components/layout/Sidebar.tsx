@@ -3,8 +3,9 @@
 import { ChatSession } from "@/types/chat";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Plus, MessageSquare } from "lucide-react";
+import { Plus, MessageSquare, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useClerk } from "@clerk/nextjs";
 import ThemeToggle from "./ThemeToggle";
 
 type SidebarProps = {
@@ -20,6 +21,8 @@ export default function Sidebar({
   onNewChat,
   onSelectChat,
 }: SidebarProps) {
+  const { signOut } = useClerk()
+
   return (
     <div className="flex flex-col h-full bg-sidebar">
       {/* Header */}
@@ -69,10 +72,19 @@ export default function Sidebar({
         )}
       </ScrollArea>
 
-      {/* Footer — theme toggle */}
+      {/* Footer — theme toggle + logout */}
       <div className="mx-3 h-px bg-border/40" />
-      <div className="px-3 py-3">
+      <div className="px-3 py-3 flex items-center justify-between">
         <ThemeToggle />
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => signOut({ redirectUrl: '/sign-in' })}
+          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+        >
+          <LogOut className="h-4 w-4" />
+          <span className="sr-only">Sign out</span>
+        </Button>
       </div>
     </div>
   );

@@ -1027,3 +1027,76 @@ One place to change, all interfaces stay consistent. `as const` is needed when a
 - How would you handle re-ingestion of a document (updated version)?
 - What is idempotency and where does it matter in this system?
 - What ID format constraints does Qdrant impose and why does it matter when sharing IDs across databases?
+
+---
+
+## 21. Clerk Authentication — Custom Flows with Clerk v7
+
+### The question
+How does Clerk v7's custom flow API differ from v6, and why does `useSignIn()` behave differently?
+
+### What Clerk v7 changed
+
+Clerk v7 (`@clerk/nextjs@^7`) introduced a Signal-based API called `SignInFutureResource` and `SignUpFutureResource`. The hooks and method signatures changed significantly from v6.
+
+**Hook return shapes:**
+```typescript
+// v6 (old)
+const { signIn, setActive, isLoaded } = useSignIn()
+const { signUp, setActive, isLoaded } = useSignUp()
+
+// v7 (new)
+const { signIn, errors, fetchStatus } = useSignIn()  // no setActive, no isLoaded
+const { signUp, errors, fetchStatus } = useSignUp()
+```
+
+**Method signatures — v6 vs v7:**
+
+| Action | v6 | v7 |
+|---|---|---|
+| Email + password sign-in | `signIn.create({ identifier, password })` — throws on error | `signIn.password({ emailAddress, password })` — returns `{ error }` |
+| Email + password sign-up | `signUp.create({ emailAddress, password, ... })` — throws | `signUp.password({ emailAddress, password, ... })` — returns `{ error }` |
+| Send email verification | `signUp.prepareEmailAddressVerification({ strategy: 'email_code' })` | `signUp.verifications.sendEmailCode()` |
+| Verify email OTP | `signUp.attemptEmailAddressVerification({ code })` | `signUp.verifications.verifyEmailCode({ code })` |
+| Set session active | `setActive({ session: createdSessionId })` | `signIn.finalize()` / `signUp.finalize()` |
+| Google OAuth | `signIn.authenticateWithRedirect({ strategy, redirectUrl, redirectUrlComplete })` | `signIn.sso({ strategy, redirectUrl, redirectCallbackUrl })` |
+
+**Error handling changed:** v6 methods throw — wrap in try/catch. v7 methods return `{ error: ClerkError | null }` — check the return value.
+
+**`finalize()` does not navigate automatically.** After calling `signIn.finalize()` or `signUp.finalize()`, you must manually redirect using `router.push('/chat')`.
+
+### The `needs_client_trust` status
+
+When a user signs in from a new/unrecognized device, Clerk returns `status: 'needs_client_trust'` instead of `'complete'` after password verification. This requires a second step:
+
+1. `signIn.mfa.sendEmailCode()` — Clerk sends a code to the user's email
+2. `signIn.mfa.verifyEmailCode({ code })` — verify the code
+3. `signIn.status` becomes `'complete'` → call `signIn.finalize()`
+
+This is Clerk's Client Trust feature — it prevents session hijacking when signing in from an unfamiliar device. On subsequent sign-ins from the same device, the status goes straight to `'complete'`.
+
+### Where middleware lives in a `src/` project
+
+In Next.js, `middleware.ts` must be placed at the same level as your `app/` or `pages/` directory:
+- Without `src/`: middleware at project root (next to `package.json`)
+- With `src/`: middleware at `src/middleware.ts`
+
+Placing it at the project root when using `src/` means Next.js silently ignores it — no error, no warning, just no middleware running.
+
+### The answer in one go
+
+Clerk v7 replaced the promise-based, throw-on-error API with a Signal-based API where methods return `{ error }` instead of throwing. `setActive()` was removed — use `signIn.finalize()` / `signUp.finalize()` to activate a session, then manually navigate. Google OAuth now uses `signIn.sso({ strategy, redirectUrl, redirectCallbackUrl })`. When signing in from a new device, Clerk returns `needs_client_trust` status after password verification, requiring a second email code step via `signIn.mfa`. In a `src/`-based Next.js project, `middleware.ts` must live inside `src/`, not at the root.
+
+---
+
+### Revision Questions
+
+#### Auth
+- What does `ClerkProvider` do and where does it go in a Next.js App Router app?
+- What is `clerkMiddleware` and what does `createRouteMatcher` help with?
+- What is the difference between a public route and a protected route in Clerk middleware?
+- Why does `finalize()` not navigate automatically, and how do you handle redirection after sign-in/sign-up?
+- What is `needs_client_trust` and when does Clerk return it?
+- What changed between Clerk v6 and v7 in custom flow hooks?
+- Where must `middleware.ts` live in a Next.js project that uses the `src/` directory? What happens if you put it at the root?
+- What is the SSO callback page and why does Google OAuth require it?
