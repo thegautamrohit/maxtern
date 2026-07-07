@@ -1,6 +1,6 @@
 # Maxtern — Project State
 
-Last updated: 2026-06-30
+Last updated: 2026-07-07 (synced with architecture.md)
 
 ---
 
@@ -102,6 +102,7 @@ payload:
 
 ```
 src/
+  middleware.ts                     ✅ Done (Clerk — public/protected route gate)
   core/
     types.ts                        ✅ Done
   db/
@@ -124,7 +125,7 @@ src/
     embedder.ts                     ✅ Done
     sparse-embedder.ts              ✅ Done
   tools/
-    web-search.ts                       ✅ Done
+    web-search.ts                   ✅ Done
   workflows/
     ingest.ts                       ✅ Done
     query.ts                        ✅ Done (updated — compiledGraph.invoke)
@@ -139,15 +140,22 @@ src/
       summary-retriever.ts          ✅ Done
     query-analyzer.ts               ✅ Done
     retrieval-router.ts             ✅ Done
+    reranker.ts                     🔴 Not started (V3)
+    query-rewriter.ts               🔴 Not started (V3)
   llm/
     llm.ts                          ✅ Done
   prompts/
     prompt.ts                       ✅ Done
-  workflows/
-    query.ts                        ✅ Done
-  observability/                    ⏸ Deferred to V2
+  observability/                    ⏸ Deferred to V3
 
 app/
+  (auth)/
+    sign-in/
+      page.tsx                      ✅ Done
+    sign-up/
+      page.tsx                      ✅ Done
+    sso-callback/
+      page.tsx                      ✅ Done
   api/
     ingest/
       route.ts                      ✅ Done
@@ -387,9 +395,9 @@ Output: { "answer": "...", "debug": {} }
 
 ---
 
-## Development Order (per PROJECT_SPECS.md)
+## Development Order
 
-### Phase 1 — V1 Foundation
+### V1 — Foundation
 | # | Component | Status |
 |---|---|---|
 | 1 | Qdrant Setup | ✅ Done |
@@ -400,31 +408,56 @@ Output: { "answer": "...", "debug": {} }
 | 6 | Recursive Chunking | ✅ Done |
 | 7 | Markdown Chunking | ✅ Done |
 | 8 | Embeddings | ✅ Done |
-| 9 | Semantic Retriever | ✅ Done |
-| 10 | Query API | ✅ Done |
-| 11 | Answer Generation | ✅ Done |
+| 9 | Semantic Retriever + Summary Retriever | ✅ Done |
+| 10 | Rule-based Query Analyzer + Retrieval Router | ✅ Done |
+| 11 | Answer Generation (LLM + prompt) | ✅ Done |
+| 12 | POST /api/ingest + POST /api/query | ✅ Done |
+| 13 | Frontend — chat UI, debug panel, source selector | ✅ Done |
 
-### Phase 2 — Adaptive Retrieval
+### V2 — Smarter Retrieval
 | # | Component | Status |
 |---|---|---|
-| 12 | Summary Retriever | ✅ Done |
-| 13 | Query Analyzer | ✅ Done |
-| 14 | Retrieval Router | ✅ Done |
-| 15 | Observability | ⏸ Deferred to V2 |
+| 14 | LangGraph pipeline (5 nodes) | ✅ Done |
+| 15 | Hybrid Retrieval — dense + sparse (BM25) + RRF fusion | ✅ Done |
+| 16 | CRAG — LLM evaluator + web search fallback | ✅ Done |
+| 17 | Tool Calling (graph-controlled, Approach 3) | ✅ Done |
+| 18 | Multi-Query Retrieval | 🔴 Pending |
+| 19 | CRAG Retry Loop | 🔴 Pending |
+| 20 | Queue-based Ingestion (BullMQ + Redis) | 🔴 Pending |
+| 21 | SSE Streaming for Query API | 🔴 Pending |
+| 22 | URL Fetcher Tool | 🔴 Pending |
 
-### Phase 3 — V2
+### V3 — Production Hardening
 | # | Component | Status |
 |---|---|---|
-| 16 | LangGraph | ✅ Done |
-| 17 | Hybrid Retrieval | ✅ Done |
-| 18 | CRAG | ✅ Done |
+| 23 | LLM-based Query Analyzer (replaces rule-based) | 🔴 Pending |
+| 24 | Cross-Encoder Reranker | 🔴 Pending |
+| 25 | Ingestion Deduplication (SHA-256 hash) | 🔴 Pending |
+| 26 | Transactional Ingestion (`vectorized` flag + rollback) | 🔴 Pending |
+| 27 | Authentication — Option A (Clerk gate) | ✅ Done |
+| 28 | Authentication — Option B (per-user document isolation) | 🔴 Pending |
+| 29 | Rate Limiting (Redis sliding window) | 🔴 Pending |
+| 30 | Conversational Query Rewriting | 🔴 Pending |
+| 31 | Ingestion Input Validation + SSRF protection | 🔴 Pending |
+| 32 | Persistent Query Logs (`query_logs` table) | 🔴 Pending |
+| 33 | Error Handling — typed errors, backoff, circuit breaker | 🔴 Pending |
+| 34 | Observability Layer (debug storage + dashboards) | 🔴 Pending |
 
-### Phase 4 — V3
+### V4 — Agentic Capabilities
 | # | Component | Status |
 |---|---|---|
-| 19 | Tool Calling | ✅ Done |
-| 20 | MCP Integration | 🔴 Pending |
-| 21 | Agents | 🔴 Pending |
+| 35 | Full LLM Tool Calling — ReAct pattern (Approach 2) | 🔴 Pending |
+| 36 | MCP Consumer Integration | 🔴 Pending |
+| 37 | Planner + Research Agent | 🔴 Pending |
+
+### V5 — Multi-Agent + Memory
+| # | Component | Status |
+|---|---|---|
+| 38 | Multi-Agent Architecture (Planner, Retrieval, Research, Review) | 🔴 Pending |
+| 39 | Self-RAG (groundedness + faithfulness scoring) | 🔴 Pending |
+| 40 | Custom Memory Layer (PostgreSQL-backed, per-user/session) | 🔴 Pending |
+| 41 | Maxtern as MCP Server | 🔴 Pending |
+| 42 | RAG Evaluation (Ragas / DeepEval) | 🔴 Pending |
 
 ---
 
@@ -597,7 +630,7 @@ type TokenUsage = {
 
 | Component | Status |
 |---|---|
-| Sidebar | ✅ Done |
+| Sidebar (with logout button) | ✅ Done |
 | ChatLayout | ✅ Done |
 | ChatWindow | ✅ Done |
 | MessageList / MessageBubble | ✅ Done |
@@ -610,6 +643,9 @@ type TokenUsage = {
 | RetrieverBadge | ✅ Done |
 | TokenUsage | ✅ Done |
 | ThemeToggle (dark/light) | ✅ Done |
+| `/sign-in` — custom Clerk sign-in page | ✅ Done |
+| `/sign-up` — custom Clerk sign-up page (2-step) | ✅ Done |
+| `/sso-callback` — Google OAuth callback handler | ✅ Done |
 | `/chat` route | ✅ Done |
 | `/chat/[chatId]` route | 🔴 Not needed (single-session V1) |
 
@@ -636,7 +672,12 @@ type TokenUsage = {
 - Server saves to `/tmp/uuid.pdf` → `ingestDocument` → `unlinkSync` cleanup in `finally`
 
 ### UX Flow (current)
-- No blocking source selector screen — chat starts immediately
+- Unauthenticated users redirected to `/sign-in` via Clerk middleware
+- Signed-in users visiting `/sign-in` or `/sign-up` redirected to `/chat`
+- Sign-in supports email/password + Google OAuth + device trust (email OTP on new device)
+- Sign-up is 2-step: collect info → verify email OTP → redirect to `/chat`
+- Logout button in sidebar footer (LogOut icon, next to ThemeToggle)
+- No blocking source selector screen — chat starts immediately after login
 - Paperclip button in input opens bottom Sheet with SourceSelector
 - Source badge shown at top after ingest — clickable to change source
 - Dark/light theme toggle in sidebar footer
@@ -651,6 +692,9 @@ type TokenUsage = {
 | Qdrant stores only references, not content | PostgreSQL is source of truth for content; enables SQL queries, JOINs, relational integrity |
 | Manual retrieval (no LangChain VectorStore abstraction) | Our hybrid Qdrant+Postgres setup doesn't map to LangChain's QdrantVectorStore which stores content in Qdrant payload |
 | Batch embedding (`embedTexts`) over per-chunk (`embedText`) | Single model call for all chunks — significantly more efficient |
+| Clerk v7 custom flow — `signIn.password()` + `signIn.finalize()` | Clerk v7 replaced the v6 hook API: methods return `{ error }` instead of throwing; `setActive()` replaced by `finalize()`; manual `router.push()` required after finalize |
+| `src/middleware.ts` not project root | Next.js resolves middleware from `src/` when app uses the `src/` directory layout — placing it at root is silently ignored |
+| Auth Option A before Option B | Option A (gate) is a prerequisite for Option B (per-user isolation) — no point scoping queries by userId before users exist |
 | `Promise.all` for chunk storing | Parallel PostgreSQL + Qdrant writes per chunk — faster than sequential loop |
 | `he` library for HTML entity decoding | Normalizer responsibility, not loader's — loaders return raw, normalizer cleans |
 | `MarkdownTextSplitter` over `MarkdownHeaderTextSplitter` | `MarkdownHeaderTextSplitter` is Python-only; JS equivalent is `MarkdownTextSplitter` |
