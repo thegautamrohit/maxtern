@@ -6,7 +6,7 @@
 
 ## What This Project Is
 
-Adaptive Retrieval Runtime (ARR) — an AI knowledge system that ingests documents (PDF, Website, GitHub), stores them as vector chunks, and answers queries by selecting the right retrieval strategy.
+Adaptive Retrieval Runtime (ARR) — an AI knowledge system that ingests documents (PDF, Website, GitHub), stores them as vector chunks, and answers queries by selecting the right retrieval strategy using a LangGraph pipeline with CRAG (Corrective RAG) and hybrid retrieval.
 
 This is a learning project. The user drives implementation. Do not implement entire features autonomously. Explain, guide, and let the user write code. Only write code when explicitly asked.
 
@@ -51,6 +51,26 @@ Concepts & learnings log: `docs/learnings.md`
 - PDF/Website loaders return single `Document` — call `processSingleDocument` directly
 - Use `Promise.all(chunks.map(...))` for parallel chunk storage — not a sequential loop
 
+### Authentication (Clerk v7)
+- Package: `@clerk/nextjs@^7` — signal-based API, completely different from v6
+- `ClerkProvider` wraps `<html>` in `src/app/layout.tsx` — not the body, not a subtree
+- Middleware lives at `src/middleware.ts` — NOT at the project root. Next.js silently ignores root middleware when using `src/` directory
+- `useSignIn()` returns `{ signIn, errors, fetchStatus }` — no `isLoaded`, no `setActive`
+- Guard pattern: `if (!signIn) return` — not `if (!isLoaded) return`
+- Sign-in methods: `signIn.password()`, `signIn.finalize()`, `signIn.sso()`, `signIn.mfa.sendEmailCode()`, `signIn.mfa.verifyEmailCode()`
+- Sign-up methods: `signUp.password()`, `signUp.verifications.sendEmailCode()`, `signUp.verifications.verifyEmailCode()`, `signUp.finalize()`
+- All methods return `{ error }` — they do not throw
+- `finalize()` does NOT navigate — always call `router.push('/chat')` manually after it
+- `needs_client_trust` status: new device detected — requires second OTP step via `signIn.mfa.*`
+- Google SSO redirect URLs must be absolute (use `window.location.origin`) — relative paths are rejected
+- Logout: `useClerk().signOut({ redirectUrl: '/sign-in' })`
+
+### LangGraph / CRAG pipeline (V2+)
+- Query pipeline is a LangGraph StateGraph — nodes: retrieve → grade → (rewrite | generate)
+- CRAG pattern: if graded chunks are irrelevant, rewrite query and re-retrieve before generating
+- Tool calling used for CRAG retry: retrieve tool called by LLM when grading fails
+- Do not bypass the graph with direct LLM calls — all query flow goes through the graph
+
 ---
 
 ## Conventions
@@ -82,32 +102,7 @@ Concepts & learnings log: `docs/learnings.md`
 
 ## Current State
 
-### Done
-- `src/core/types.ts` — Document + Chunk interfaces
-- `src/db/client.ts` — Prisma singleton
-- `src/vector/client.ts` — Qdrant singleton
-- `src/vector/collection.ts` — ensureCollections()
-- `src/vector/store.ts` — storeDocument, storeChunk
-- `src/ingestion/loaders/pdf-loader.ts`
-- `src/ingestion/loaders/website-loader.ts`
-- `src/ingestion/loaders/github-loader.ts`
-- `src/ingestion/normalizers/document-normalizer.ts`
-- `src/chunking/recursive-chunker.ts`
-- `src/chunking/markdown-chunker.ts`
-- `src/embeddings/embedder.ts`
-- `src/workflows/ingest.ts`
-
-### In Progress
-- `src/retrieval/retrievers/semantic-retriever.ts` — placeholder only, needs implementation
-
-### Not Started
-- `src/retrieval/query-analyzer.ts`
-- `src/retrieval/retrieval-router.ts`
-- `src/llm/`
-- `src/observability/`
-- `app/api/ingest/`
-- `app/api/query/`
-- Frontend (all components)
+See `docs/project-state.md` for the authoritative list of what is done, in progress, and pending. Do not maintain a duplicate list here — it will go stale.
 
 ---
 
@@ -145,12 +140,15 @@ This is a learning project. The user learns by doing — Claude teaches, explain
 - Do not add abstractions, helpers, or utilities that are not needed yet
 - Do not auto-generate frontend code unless explicitly asked
 - Do not modify `prisma/schema.prisma` without discussing the migration impact
+- Do not commit anything unless the user explicitly asks
+- Do not place middleware at the project root when using `src/` directory — it must be at `src/middleware.ts`
+- Do not store content in Qdrant payload — even for auth (userId belongs in PostgreSQL Document table)
 
 ---
 
 ## V1 Known Limitations (do not try to fix unless asked)
 
 - Website loader fails on bot-protected sites (Cloudflare, etc.) — V2 concern
-- Single-user only — no `userId` filtering yet — planned post-V1
+- Single-user only — no `userId` filtering yet — planned for V2 auth hardening
 - GitHub loader loads all files — no ignore patterns yet
 - No streaming on query API — full response returned at once
