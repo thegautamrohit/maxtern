@@ -5,6 +5,7 @@ import { RetrievedChunk, SourceType } from "@/core/types";
 
 async function summaryRetriever(
   query: string,
+  userId: string,
   documentIds?: string[],
 ): Promise<RetrievedChunk[]> {
   const searchVector = await embedText(query);
@@ -14,13 +15,14 @@ async function summaryRetriever(
       name: "dense",
       vector: searchVector,
     },
-    ...(documentIds && documentIds.length > 0
-      ? {
-          filter: {
-            must: [{ key: "documentId", match: { any: documentIds } }],
-          },
-        }
-      : {}),
+    filter: {
+      must: [
+        { key: "userId", match: { value: userId } },
+        ...(documentIds && documentIds.length > 0
+          ? [{ key: "documentId", match: { any: documentIds } }]
+          : []),
+      ],
+    },
   });
 
   const retrievedChunkIds = searchResults

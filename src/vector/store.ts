@@ -7,6 +7,7 @@ export async function storeChunk(
   vector: number[],
   documentid: string,
   sparseVector: SparseVector,
+  userId: string,
 ) {
   // Store in Postgres
 
@@ -30,6 +31,7 @@ export async function storeChunk(
           chunkId: savedChunk.id,
           documentId: documentid,
           sourceType: chunk.metadata.sourceType,
+          userId
         },
       },
     ],

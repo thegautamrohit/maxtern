@@ -1,6 +1,7 @@
 type SourceType = "pdf" | "website" | "github" | "web";
 
 interface Document {
+  userId: string;
   title: string;
   content: string;
   sourceType: SourceType;

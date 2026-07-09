@@ -5,6 +5,7 @@ import { compiledGraph } from "./graph/graph";
 
 export async function handleQuery(
   userQuery: string,
+  userId: string,
   documentIds?: string[],
   transformedHistory?: BaseMessage[],
 ): Promise<{ answer: string; debugInfo: DebugInfo }> {
@@ -18,6 +19,7 @@ export async function handleQuery(
     } = await compiledGraph.invoke({
       query: userQuery,
       history: transformedHistory,
+      userId,
       documentIds,
     });
 

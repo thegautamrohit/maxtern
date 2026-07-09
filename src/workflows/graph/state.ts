@@ -13,6 +13,7 @@ export const GraphState = Annotation.Root({
   relevant: Annotation<boolean>(),
   history: Annotation<BaseMessage[]>(),
   documentIds: Annotation<string[]>(),
+  userId: Annotation<string>()
 });
 
 export type GraphStateType = typeof GraphState.State;

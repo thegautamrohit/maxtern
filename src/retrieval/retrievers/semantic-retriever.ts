@@ -6,17 +6,20 @@ import { computeSparseVector } from "@/embeddings/sparse-embedder";
 
 async function semanticRetrieval(
   query: string,
+  userId: string,
   documentIds?: string[],
 ): Promise<RetrievedChunk[]> {
   const queryDenseVector = await embedText(query);
   const querySparseVector = computeSparseVector(query);
 
-  const filter =
-    documentIds && documentIds.length > 0
-      ? {
-          must: [{ key: "documentId", match: { any: documentIds } }],
-        }
-      : undefined;
+  const filter = {
+    must: [
+      { key: "userId", match: { value: userId } },
+      ...(documentIds && documentIds.length > 0
+        ? [{ key: "documentId", match: { any: documentIds } }]
+        : []),
+    ],
+  };
 
   const denseResults = await qdrant.search("chunks", {
     vector: { name: "dense", vector: queryDenseVector },
@@ -27,7 +30,7 @@ async function semanticRetrieval(
   const sparseResults = await qdrant.search("chunks", {
     vector: { name: "sparse", vector: querySparseVector },
     limit: 20,
-    filter
+    filter,
   });
 
   // RRF (Reciprocal Rank Fusion) Implementation, (for ranking of chunks from both searches)
@@ -63,7 +66,7 @@ async function semanticRetrieval(
       sourceType: SourceType;
     }
   >(
-    [ ...denseResults, ...sparseResults ].map((item) => [
+    [...denseResults, ...sparseResults].map((item) => [
       item.payload?.chunkId as string,
       {
         sourceType: item.payload?.sourceType as SourceType,

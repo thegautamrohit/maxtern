@@ -2,9 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { handleQuery } from "@/workflows/query";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { Message } from "@/types/chat";
+import { auth } from "@clerk/nextjs/server";
 
 export async function POST(request: NextRequest) {
   try {
+    const { userId } = await auth();
+
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const { query, documentIds, history } = await request.json();
     if (!query) {
       return NextResponse.json({ error: "No query provided" }, { status: 400 });
@@ -18,7 +25,12 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    const response = await handleQuery(query, documentIds, transformedHistory);
+    const response = await handleQuery(
+      query,
+      userId,
+      documentIds,
+      transformedHistory,
+    );
 
     return NextResponse.json(
       {
