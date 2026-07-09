@@ -4,9 +4,14 @@ import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+import { auth } from '@clerk/nextjs/server'
 
 export async function POST(request: NextRequest) {
   try {
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorised" }, { status: 401 })
+    }
     const contentType = request.headers.get("content-type") ?? "";
 
     if (contentType.includes("multipart/form-data")) {
@@ -24,7 +29,7 @@ export async function POST(request: NextRequest) {
       writeFileSync(tmpPath, buffer);
 
       try {
-        const documentIds = await ingestDocument("pdf", tmpPath);
+        const documentIds = await ingestDocument("pdf", tmpPath, userId);
         return NextResponse.json({ documentIds, status: "completed" }, { status: 200 });
       } finally {
         unlinkSync(tmpPath); // always clean up
@@ -38,7 +43,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No source or type provided" }, { status: 400 });
     }
 
-    const documentIds = await ingestDocument(type, source, branch);
+    const documentIds = await ingestDocument(type, source, userId, branch);
     return NextResponse.json({ documentIds, status: "completed" }, { status: 200 });
 
   } catch (error) {

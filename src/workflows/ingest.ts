@@ -3,7 +3,7 @@ import { loadWebsite } from "../ingestion/loaders/website-loader";
 import { githubLoader } from "../ingestion/loaders/github-loader";
 import { normalizeDocument } from "../ingestion/normalizers/document-normalizer";
 import { storeChunk, storeDocument } from "../vector/store";
-import { Chunk, Document } from "../core/types";
+import { Chunk, Document, SourceType } from "../core/types";
 import { markdownChunk } from "@/chunking/markdown-chunker";
 import { recursiveChunk } from "@/chunking/recursive-chunker";
 import { embedTexts } from "@/embeddings/embedder";
@@ -12,7 +12,7 @@ import { computeSparseVector } from "@/embeddings/sparse-embedder";
 
 async function processSingleDocument(
   doc: Document,
-  sourceType: "pdf" | "website" | "github",
+  sourceType: SourceType,
 ): Promise<string[]> {
   try {
     const normalisedDoc = normalizeDocument(doc);
@@ -27,7 +27,7 @@ async function processSingleDocument(
     );
 
     const sparseVectors = chunks?.map((chunk) =>
-      computeSparseVector(chunk.content)
+      computeSparseVector(chunk.content),
     );
 
     await Promise.all(
@@ -37,6 +37,7 @@ async function processSingleDocument(
           vectors[index],
           storedDocId,
           sparseVectors[index],
+          doc.userId
         );
       }),
     );
@@ -51,6 +52,7 @@ async function processSingleDocument(
 export async function ingestDocument(
   sourceType: "pdf" | "website" | "github",
   source: string,
+  userId: string,
   branch?: string,
 ): Promise<string[]> {
   try {
@@ -58,15 +60,18 @@ export async function ingestDocument(
 
     if (sourceType === "pdf") {
       const doc = await loadPDF(source);
-      return await processSingleDocument(doc, sourceType);
+      return await processSingleDocument({ ...doc, userId }, sourceType);
     } else if (sourceType === "website") {
       const doc = await loadWebsite(source);
-      return await processSingleDocument(doc, sourceType);
+      return await processSingleDocument({ ...doc, userId }, sourceType);
     } else if (sourceType === "github") {
       const docs = await githubLoader(source, branch);
       const storedDocIds = [];
       for (const doc of docs) {
-        const storedDocId = await processSingleDocument(doc, sourceType);
+        const storedDocId = await processSingleDocument(
+          { ...doc, userId },
+          sourceType,
+        );
         storedDocIds.push(...storedDocId);
       }
       return [...storedDocIds];

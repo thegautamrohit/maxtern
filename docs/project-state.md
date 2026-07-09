@@ -435,7 +435,7 @@ Output: { "answer": "...", "debug": {} }
 | 25 | Ingestion Deduplication (SHA-256 hash) | 🔴 Pending |
 | 26 | Transactional Ingestion (`vectorized` flag + rollback) | 🔴 Pending |
 | 27 | Authentication — Option A (Clerk gate) | ✅ Done |
-| 28 | Authentication — Option B (per-user document isolation) | 🔴 Pending |
+| 28 | Authentication — Option B (per-user document isolation) | ✅ Done |
 | 29 | Rate Limiting (Redis sliding window) | 🔴 Pending |
 | 30 | Conversational Query Rewriting | 🔴 Pending |
 | 31 | Ingestion Input Validation + SSRF protection | 🔴 Pending |

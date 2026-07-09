@@ -14,9 +14,9 @@ export const analyzerNode = async (state: GraphStateType) => {
 };
 
 export const retrieverNode = async (state: GraphStateType) => {
-  const { query, strategy, documentIds } = state;
+  const { query, strategy, documentIds, userId } = state;
 
-  const retrievedChunks = await retrievalRouter(strategy, query, documentIds);
+  const retrievedChunks = await retrievalRouter(strategy, query, userId, documentIds);
 
   return { chunks: retrievedChunks };
 };
