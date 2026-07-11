@@ -6,6 +6,7 @@ interface Document {
   content: string;
   sourceType: SourceType;
   metadata: any;
+  contentHash?: string;
 }
 
 interface Chunk {

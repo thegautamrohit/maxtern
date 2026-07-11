@@ -1100,3 +1100,67 @@ Clerk v7 replaced the promise-based, throw-on-error API with a Signal-based API 
 - What changed between Clerk v6 and v7 in custom flow hooks?
 - Where must `middleware.ts` live in a Next.js project that uses the `src/` directory? What happens if you put it at the root?
 - What is the SSO callback page and why does Google OAuth require it?
+
+---
+
+## 22. Ingestion Deduplication — SHA-256 Hash + Prisma Compound Unique Constraints
+
+### The problem
+Without deduplication, ingesting the same document twice creates two `Document` rows in PostgreSQL and two full sets of chunk vectors in Qdrant. Retrieval then returns duplicate chunks for every query, wastes context window tokens, and inflates LLM cost. There is no way for the system to detect or recover from this state.
+
+### The fix — content hash on the Document table
+
+SHA-256 the document content after normalization. Store the hash on the `Document` row. Before writing anything, check if that `(userId, contentHash)` pair already exists. If it does, return the existing documentId and skip all storage.
+
+```typescript
+const contentHash = createHash("sha256").update(normalisedDoc.content).digest("hex")
+const existing = await prisma.document.findUnique({
+  where: { userId_contentHash: { userId, contentHash } }
+})
+if (existing) return [existing.id]
+```
+
+### Why `@@unique([userId, contentHash])` and not `@unique` on `contentHash` alone
+
+`@unique` on `contentHash` alone would prevent two different users from ingesting the same document independently — User A ingest the React docs, then User B tries to ingest the same React docs and gets blocked. That's wrong. Each user's document space is independent.
+
+`@@unique([userId, contentHash])` enforces uniqueness on the **combination** — the same content can exist once per user, but not twice for the same user. This is the correct multi-tenancy constraint.
+
+### What `userId_contentHash` is — Prisma-generated compound key
+
+`@@unique([userId, contentHash])` in Prisma generates a named input type for that constraint at client-gen time, named by joining the field names with underscores: `userId_contentHash`.
+
+It is **not a column**. It is a lookup key that maps to the unique constraint:
+
+```sql
+-- what Prisma translates it to:
+SELECT * FROM "Document"
+WHERE "userId" = $1 AND "contentHash" = $2
+LIMIT 1
+```
+
+`findUnique` requires the `where` clause to reference a unique constraint. Your `Document` table has two: `id` (primary key) and `(userId, contentHash)` (composite). The generated key lets you select which constraint to look up by.
+
+For a single-field `@unique`, you reference the field directly — `where: { contentHash: "..." }`. The compound key syntax only appears for multi-field `@@unique`.
+
+### Why `LIMIT 1` on a unique constraint
+
+`findUnique` adds `LIMIT 1` to every query even though the unique constraint guarantees at most one row. PostgreSQL uses the index to find the match instantly — `LIMIT 1` stops any further scanning once it's found. It's a defensive addition: if something went wrong and duplicates existed, only one row comes back. It also signals intent — this is a single-row lookup, not a scan.
+
+The contrast is with `findFirst` — which also returns one row but accepts non-unique `where` clauses. `findFirst` genuinely relies on `LIMIT 1` to stop scanning when multiple rows could match. `findUnique` doesn't strictly need it, but Prisma adds it anyway for correctness and consistency.
+
+### Why hash after normalization, not after loading
+
+Hashing after normalization means two documents that differ only in whitespace or HTML entities (e.g., same content, slightly different raw encoding) produce the same hash — they're treated as the same document. Hashing before normalization would treat them as different, creating unnecessary duplicates.
+
+### The answer in one go
+> "Deduplication prevents the same document from being ingested twice by SHA-256 hashing its normalized content and storing the hash on the Document row with a `@@unique([userId, contentHash])` constraint. Before any storage, a `findUnique` lookup checks if that hash already exists for that user — if so, the existing documentId is returned immediately. The composite constraint (not single-field) is correct for multi-tenancy: each user independently owns their version of the document. Prisma generates a compound key `userId_contentHash` from the `@@unique` declaration, which maps to a SQL WHERE clause on both fields with LIMIT 1."
+
+### Revision Questions
+
+- Why hash after normalization rather than immediately after loading?
+- Why use `@@unique([userId, contentHash])` instead of `@unique` on `contentHash` alone?
+- What does Prisma generate from `@@unique([userId, contentHash])` and how do you use it in a query?
+- What is the difference between `findUnique` and `findFirst`? When would you use each?
+- Why does `findUnique` add `LIMIT 1` even though the constraint guarantees at most one row?
+- What happens if you ingest the same GitHub repo twice — will all files be deduplicated or just some?

@@ -9,6 +9,8 @@ import { recursiveChunk } from "@/chunking/recursive-chunker";
 import { embedTexts } from "@/embeddings/embedder";
 import { ensureCollections } from "@/vector/collection";
 import { computeSparseVector } from "@/embeddings/sparse-embedder";
+import { createHash } from "crypto";
+import prisma from "@/db/client";
 
 async function processSingleDocument(
   doc: Document,
@@ -16,7 +18,25 @@ async function processSingleDocument(
 ): Promise<string[]> {
   try {
     const normalisedDoc = normalizeDocument(doc);
-    const storedDocId = await storeDocument(normalisedDoc);
+    const contentHash = createHash("sha256")
+      .update(normalisedDoc.content)
+      .digest("hex");
+
+    const existingDoc = await prisma.document.findUnique({
+      where: {
+        userId_contentHash: {
+          userId: doc?.userId,
+          contentHash: contentHash,
+        },
+      },
+    });
+
+    if (existingDoc) {
+      console.log(`Document with contentHash ${contentHash} already exists for this user. Skipping ingestion.`);
+      return [existingDoc.id];
+    }
+
+    const storedDocId = await storeDocument({...normalisedDoc, contentHash});
     const chunks =
       sourceType === "github"
         ? await markdownChunk(normalisedDoc)
@@ -37,7 +57,7 @@ async function processSingleDocument(
           vectors[index],
           storedDocId,
           sparseVectors[index],
-          doc.userId
+          doc.userId,
         );
       }),
     );
