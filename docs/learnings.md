@@ -1164,3 +1164,80 @@ Hashing after normalization means two documents that differ only in whitespace o
 - What is the difference between `findUnique` and `findFirst`? When would you use each?
 - Why does `findUnique` add `LIMIT 1` even though the constraint guarantees at most one row?
 - What happens if you ingest the same GitHub repo twice — will all files be deduplicated or just some?
+
+---
+
+## 23. LLM-Based Query Analyzer — Replacing Rule-Based Classification
+
+### The problem with keyword matching
+
+The V1 query analyzer used string matching:
+
+```typescript
+const summaryKeywords = ["summary", "summarise", "overview"]
+return summaryKeywords.some(kw => query.toLowerCase().includes(kw))
+  ? "summary" : "semantic"
+```
+
+This breaks on any phrasing that doesn't contain the exact trigger words. "Give me the gist of this", "walk me through the architecture", "high level explanation" — all route to `semantic` because none contain `"summary"` or `"overview"`. The keyword list becomes a maintenance burden with no ceiling on edge cases.
+
+### The fix — a single cheap LLM classification call
+
+Replace keyword matching with a structured LLM call that reads the actual query and returns a typed intent:
+
+```typescript
+interface QueryIntent {
+  strategy: RetrievalStrategy   // "semantic" | "summary"
+  confidence: number            // 0–1
+  reasoning: string             // one sentence — why this strategy was chosen
+}
+```
+
+The LLM receives the query plus a prompt explaining both strategies with examples, and returns JSON conforming to this shape. `withStructuredOutput(zodSchema)` enforces the shape at runtime — the LLM cannot return free text.
+
+### Why Zod schema, not TypeScript type
+
+`withStructuredOutput` runs at runtime — TypeScript types are erased at compile time and don't exist at runtime. Zod schemas exist at runtime and are used by LangChain to validate and coerce the LLM's JSON output. The two are separate systems:
+
+```typescript
+// Zod — runtime enforcement
+const schema = z.object({
+  strategy: z.enum(["semantic", "summary"]),
+  confidence: z.number(),
+  reasoning: z.string(),
+})
+
+// TypeScript — compile-time only, derived from Zod or defined separately
+type QueryIntent = z.infer<typeof schema>
+```
+
+`z.enum(["semantic", "summary"])` is stricter than `z.string()` — it rejects any value outside the allowed set, which prevents the LLM from returning unexpected strings.
+
+### Temperature 0 for classification
+
+Classification is a deterministic judgment — there is no creative value in randomness. Temperature 0 makes the model pick the highest-probability token at each step. The same query will always produce the same classification. For tasks like routing, evaluation, and structured extraction, always use temperature 0.
+
+### `reasoning` as a first-class field
+
+The `reasoning` field replaces the hardcoded `retrievalReason` strings in `DebugInfo`. Instead of `"Summary keywords detected in query"` — a string that was always wrong for queries like "give me the gist" — the debug panel now shows what the LLM actually said: `"The user is asking for a broad overview of the ingestion pipeline rather than a specific fact."` Real signal, not a canned label.
+
+### Wiring `reasoning` through the graph
+
+`reasoning` from `QueryIntent` is mapped to `queryReasoning` in graph state (to avoid naming collisions), flows through `compiledGraph.invoke`, is destructured in `query.ts`, and fed into `debugInfo.retrievalReason`. The rename to `queryReasoning` is intentional — "reasoning" is too generic a name for a shared state object.
+
+### Where curly braces need escaping in LangChain prompts
+
+`ChatPromptTemplate` interprets `{word}` as a template variable. Any literal `{` or `}` in the prompt — such as in a JSON example — must be doubled: `{{` renders as `{`, `}}` renders as `}` at invoke time. Missing this causes a `"Single '}' in template"` error at runtime.
+
+### The answer in one go
+> "The rule-based query analyzer is replaced with a single cheap LLM call that returns a structured `QueryIntent` — strategy, confidence, and reasoning. `withStructuredOutput` enforces the shape using a Zod schema at runtime. Temperature 0 makes the classification deterministic. The `reasoning` field flows through graph state as `queryReasoning` and replaces hardcoded retrieval reason strings in the debug panel — so the UI shows the LLM's actual explanation for why it chose semantic or summary."
+
+### Revision Questions
+
+- Why can't you use a TypeScript type directly with `withStructuredOutput`? What do you use instead?
+- Why use `z.enum(["semantic", "summary"])` instead of `z.string()` for the strategy field?
+- Why temperature 0 for a classifier but not for an answer generator?
+- What happens to `{` and `}` in a LangChain prompt template? How do you include literal braces?
+- Why is `reasoning` renamed to `queryReasoning` in graph state?
+- What was wrong with the keyword-based analyzer for queries like "walk me through the architecture"?
+- How does `reasoning` from the LLM improve the debug panel over the previous hardcoded strings?

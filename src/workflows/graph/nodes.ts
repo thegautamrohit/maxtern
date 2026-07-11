@@ -10,13 +10,20 @@ import { webSearchTool } from "@/tools/web-search";
 export const analyzerNode = async (state: GraphStateType) => {
   const { query } = state;
 
-  return { strategy: queryAnalyzer(query) };
+  const { strategy, reasoning } = await queryAnalyzer(query);
+
+  return { strategy, queryReasoning: reasoning };
 };
 
 export const retrieverNode = async (state: GraphStateType) => {
   const { query, strategy, documentIds, userId } = state;
 
-  const retrievedChunks = await retrievalRouter(strategy, query, userId, documentIds);
+  const retrievedChunks = await retrievalRouter(
+    strategy,
+    query,
+    userId,
+    documentIds,
+  );
 
   return { chunks: retrievedChunks };
 };

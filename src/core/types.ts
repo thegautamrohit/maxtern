@@ -58,6 +58,12 @@ interface SparseVector {
   values: number[];
 }
 
+interface QueryIntent {
+  strategy: RetrievalStrategy;
+  confidence: number;
+  reasoning: string;
+}
+
 export type {
   Document,
   Chunk,
@@ -68,4 +74,5 @@ export type {
   TokenUsage,
   SparseVector,
   SourceType,
+  QueryIntent,
 };

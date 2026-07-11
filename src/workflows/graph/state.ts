@@ -5,6 +5,7 @@ import { BaseMessage } from "@langchain/core/messages";
 export const GraphState = Annotation.Root({
   query: Annotation<string>(),
   strategy: Annotation<RetrievalStrategy>(),
+  queryReasoning: Annotation<string>(),
   chunks: Annotation<RetrievedChunk[]>({
     reducer: (prev, current) => current,
     default: () => [],
@@ -13,7 +14,7 @@ export const GraphState = Annotation.Root({
   relevant: Annotation<boolean>(),
   history: Annotation<BaseMessage[]>(),
   documentIds: Annotation<string[]>(),
-  userId: Annotation<string>()
+  userId: Annotation<string>(),
 });
 
 export type GraphStateType = typeof GraphState.State;
