@@ -430,9 +430,9 @@ Output: { "answer": "...", "debug": {} }
 ### V3 — Production Hardening
 | # | Component | Status |
 |---|---|---|
-| 23 | LLM-based Query Analyzer (replaces rule-based) | 🔴 Pending |
-| 24 | Cross-Encoder Reranker | 🔴 Pending |
-| 25 | Ingestion Deduplication (SHA-256 hash) | 🔴 Pending |
+| 23 | LLM-based Query Analyzer (replaces rule-based) | ✅ Done |
+| 24 | Cross-Encoder Reranker | ✅ Done |
+| 25 | Ingestion Deduplication (SHA-256 hash) | ✅ Done |
 | 26 | Transactional Ingestion (`vectorized` flag + rollback) | 🔴 Pending |
 | 27 | Authentication — Option A (Clerk gate) | ✅ Done |
 | 28 | Authentication — Option B (per-user document isolation) | ✅ Done |

@@ -20,7 +20,9 @@ model Document {
   sourceType String
   metadata Json
   chunk Chunk[]
+  contentHash String 
   createdAt DateTime @default(now())
+  @@unique([userId, contentHash])
 }
 
 model Chunk {

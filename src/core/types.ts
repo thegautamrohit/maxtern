@@ -6,6 +6,7 @@ interface Document {
   content: string;
   sourceType: SourceType;
   metadata: any;
+  contentHash?: string;
 }
 
 interface Chunk {
@@ -57,6 +58,12 @@ interface SparseVector {
   values: number[];
 }
 
+interface QueryIntent {
+  strategy: RetrievalStrategy;
+  confidence: number;
+  reasoning: string;
+}
+
 export type {
   Document,
   Chunk,
@@ -67,4 +74,5 @@ export type {
   TokenUsage,
   SparseVector,
   SourceType,
+  QueryIntent,
 };

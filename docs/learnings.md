@@ -1100,3 +1100,264 @@ Clerk v7 replaced the promise-based, throw-on-error API with a Signal-based API 
 - What changed between Clerk v6 and v7 in custom flow hooks?
 - Where must `middleware.ts` live in a Next.js project that uses the `src/` directory? What happens if you put it at the root?
 - What is the SSO callback page and why does Google OAuth require it?
+
+---
+
+## 22. Ingestion Deduplication — SHA-256 Hash + Prisma Compound Unique Constraints
+
+### The problem
+Without deduplication, ingesting the same document twice creates two `Document` rows in PostgreSQL and two full sets of chunk vectors in Qdrant. Retrieval then returns duplicate chunks for every query, wastes context window tokens, and inflates LLM cost. There is no way for the system to detect or recover from this state.
+
+### The fix — content hash on the Document table
+
+SHA-256 the document content after normalization. Store the hash on the `Document` row. Before writing anything, check if that `(userId, contentHash)` pair already exists. If it does, return the existing documentId and skip all storage.
+
+```typescript
+const contentHash = createHash("sha256").update(normalisedDoc.content).digest("hex")
+const existing = await prisma.document.findUnique({
+  where: { userId_contentHash: { userId, contentHash } }
+})
+if (existing) return [existing.id]
+```
+
+### Why `@@unique([userId, contentHash])` and not `@unique` on `contentHash` alone
+
+`@unique` on `contentHash` alone would prevent two different users from ingesting the same document independently — User A ingest the React docs, then User B tries to ingest the same React docs and gets blocked. That's wrong. Each user's document space is independent.
+
+`@@unique([userId, contentHash])` enforces uniqueness on the **combination** — the same content can exist once per user, but not twice for the same user. This is the correct multi-tenancy constraint.
+
+### What `userId_contentHash` is — Prisma-generated compound key
+
+`@@unique([userId, contentHash])` in Prisma generates a named input type for that constraint at client-gen time, named by joining the field names with underscores: `userId_contentHash`.
+
+It is **not a column**. It is a lookup key that maps to the unique constraint:
+
+```sql
+-- what Prisma translates it to:
+SELECT * FROM "Document"
+WHERE "userId" = $1 AND "contentHash" = $2
+LIMIT 1
+```
+
+`findUnique` requires the `where` clause to reference a unique constraint. Your `Document` table has two: `id` (primary key) and `(userId, contentHash)` (composite). The generated key lets you select which constraint to look up by.
+
+For a single-field `@unique`, you reference the field directly — `where: { contentHash: "..." }`. The compound key syntax only appears for multi-field `@@unique`.
+
+### Why `LIMIT 1` on a unique constraint
+
+`findUnique` adds `LIMIT 1` to every query even though the unique constraint guarantees at most one row. PostgreSQL uses the index to find the match instantly — `LIMIT 1` stops any further scanning once it's found. It's a defensive addition: if something went wrong and duplicates existed, only one row comes back. It also signals intent — this is a single-row lookup, not a scan.
+
+The contrast is with `findFirst` — which also returns one row but accepts non-unique `where` clauses. `findFirst` genuinely relies on `LIMIT 1` to stop scanning when multiple rows could match. `findUnique` doesn't strictly need it, but Prisma adds it anyway for correctness and consistency.
+
+### Why hash after normalization, not after loading
+
+Hashing after normalization means two documents that differ only in whitespace or HTML entities (e.g., same content, slightly different raw encoding) produce the same hash — they're treated as the same document. Hashing before normalization would treat them as different, creating unnecessary duplicates.
+
+### The answer in one go
+> "Deduplication prevents the same document from being ingested twice by SHA-256 hashing its normalized content and storing the hash on the Document row with a `@@unique([userId, contentHash])` constraint. Before any storage, a `findUnique` lookup checks if that hash already exists for that user — if so, the existing documentId is returned immediately. The composite constraint (not single-field) is correct for multi-tenancy: each user independently owns their version of the document. Prisma generates a compound key `userId_contentHash` from the `@@unique` declaration, which maps to a SQL WHERE clause on both fields with LIMIT 1."
+
+### Revision Questions
+
+- Why hash after normalization rather than immediately after loading?
+- Why use `@@unique([userId, contentHash])` instead of `@unique` on `contentHash` alone?
+- What does Prisma generate from `@@unique([userId, contentHash])` and how do you use it in a query?
+- What is the difference between `findUnique` and `findFirst`? When would you use each?
+- Why does `findUnique` add `LIMIT 1` even though the constraint guarantees at most one row?
+- What happens if you ingest the same GitHub repo twice — will all files be deduplicated or just some?
+
+---
+
+## 23. LLM-Based Query Analyzer — Replacing Rule-Based Classification
+
+### The problem with keyword matching
+
+The V1 query analyzer used string matching:
+
+```typescript
+const summaryKeywords = ["summary", "summarise", "overview"]
+return summaryKeywords.some(kw => query.toLowerCase().includes(kw))
+  ? "summary" : "semantic"
+```
+
+This breaks on any phrasing that doesn't contain the exact trigger words. "Give me the gist of this", "walk me through the architecture", "high level explanation" — all route to `semantic` because none contain `"summary"` or `"overview"`. The keyword list becomes a maintenance burden with no ceiling on edge cases.
+
+### The fix — a single cheap LLM classification call
+
+Replace keyword matching with a structured LLM call that reads the actual query and returns a typed intent:
+
+```typescript
+interface QueryIntent {
+  strategy: RetrievalStrategy   // "semantic" | "summary"
+  confidence: number            // 0–1
+  reasoning: string             // one sentence — why this strategy was chosen
+}
+```
+
+The LLM receives the query plus a prompt explaining both strategies with examples, and returns JSON conforming to this shape. `withStructuredOutput(zodSchema)` enforces the shape at runtime — the LLM cannot return free text.
+
+### Why Zod schema, not TypeScript type
+
+`withStructuredOutput` runs at runtime — TypeScript types are erased at compile time and don't exist at runtime. Zod schemas exist at runtime and are used by LangChain to validate and coerce the LLM's JSON output. The two are separate systems:
+
+```typescript
+// Zod — runtime enforcement
+const schema = z.object({
+  strategy: z.enum(["semantic", "summary"]),
+  confidence: z.number(),
+  reasoning: z.string(),
+})
+
+// TypeScript — compile-time only, derived from Zod or defined separately
+type QueryIntent = z.infer<typeof schema>
+```
+
+`z.enum(["semantic", "summary"])` is stricter than `z.string()` — it rejects any value outside the allowed set, which prevents the LLM from returning unexpected strings.
+
+### Temperature 0 for classification
+
+Classification is a deterministic judgment — there is no creative value in randomness. Temperature 0 makes the model pick the highest-probability token at each step. The same query will always produce the same classification. For tasks like routing, evaluation, and structured extraction, always use temperature 0.
+
+### `reasoning` as a first-class field
+
+The `reasoning` field replaces the hardcoded `retrievalReason` strings in `DebugInfo`. Instead of `"Summary keywords detected in query"` — a string that was always wrong for queries like "give me the gist" — the debug panel now shows what the LLM actually said: `"The user is asking for a broad overview of the ingestion pipeline rather than a specific fact."` Real signal, not a canned label.
+
+### Wiring `reasoning` through the graph
+
+`reasoning` from `QueryIntent` is mapped to `queryReasoning` in graph state (to avoid naming collisions), flows through `compiledGraph.invoke`, is destructured in `query.ts`, and fed into `debugInfo.retrievalReason`. The rename to `queryReasoning` is intentional — "reasoning" is too generic a name for a shared state object.
+
+### Where curly braces need escaping in LangChain prompts
+
+`ChatPromptTemplate` interprets `{word}` as a template variable. Any literal `{` or `}` in the prompt — such as in a JSON example — must be doubled: `{{` renders as `{`, `}}` renders as `}` at invoke time. Missing this causes a `"Single '}' in template"` error at runtime.
+
+### The answer in one go
+> "The rule-based query analyzer is replaced with a single cheap LLM call that returns a structured `QueryIntent` — strategy, confidence, and reasoning. `withStructuredOutput` enforces the shape using a Zod schema at runtime. Temperature 0 makes the classification deterministic. The `reasoning` field flows through graph state as `queryReasoning` and replaces hardcoded retrieval reason strings in the debug panel — so the UI shows the LLM's actual explanation for why it chose semantic or summary."
+
+### Revision Questions
+
+- Why can't you use a TypeScript type directly with `withStructuredOutput`? What do you use instead?
+- Why use `z.enum(["semantic", "summary"])` instead of `z.string()` for the strategy field?
+- Why temperature 0 for a classifier but not for an answer generator?
+- What happens to `{` and `}` in a LangChain prompt template? How do you include literal braces?
+- Why is `reasoning` renamed to `queryReasoning` in graph state?
+- What was wrong with the keyword-based analyzer for queries like "walk me through the architecture"?
+- How does `reasoning` from the LLM improve the debug panel over the previous hardcoded strings?
+
+---
+
+## 24. Cross-Encoder Reranker — Raw Logits and Why `pipeline` Was Wrong
+
+### The problem with bi-encoder retrieval alone
+
+RRF fusion gives you the best-ranked chunks from dense + sparse search — but "best ranked" means "highest in both lists," not "most relevant to this specific query." A chunk can rank #1 in both lists because it shares many tokens with the query without actually answering it. The bi-encoder encodes query and chunk separately — they never attend to each other.
+
+### Bi-encoder vs cross-encoder
+
+| | Bi-encoder (retriever) | Cross-encoder (reranker) |
+|---|---|---|
+| How it scores | Query and chunk encoded separately, compared via cosine | Query and chunk encoded together in one forward pass |
+| Attends across | Query alone, chunk alone | Query AND chunk simultaneously |
+| Speed | Fast — chunk vectors precomputed at ingestion | Slower — forward pass per query-chunk pair at query time |
+| Accuracy | Good but approximate | Significantly more accurate |
+| Scale | Works over millions of chunks | Only feasible over small candidate sets (20–30) |
+
+This is why reranking is a second-stage filter. You cannot run a cross-encoder over all of Qdrant, but you can run it over the 20–30 candidates RRF already narrowed down.
+
+### Why the `pipeline` abstraction was wrong
+
+`@xenova/transformers` has a `pipeline("text-classification", model)` convenience wrapper. For `ms-marco-MiniLM-L-6-v2`, this was the wrong choice — the model is a **regression model** with a single output neuron, not a binary classifier. The pipeline applies softmax to that single value, and softmax of one value always equals 1.0. Every chunk scored 100% regardless of actual relevance.
+
+The fix: bypass the pipeline and use the model directly via `AutoTokenizer` + `AutoModelForSequenceClassification` to access the raw logit before any normalization.
+
+### How the implementation works
+
+**Tokenization — both texts together:**
+```typescript
+const input = tokenizer(query, {
+  text_pair: chunk.content,
+  truncation: true,
+  max_length: 512,
+  return_tensors: "pt"
+})
+```
+The cross-encoder receives query and chunk as a single concatenated input — `text_pair` tells the tokenizer to pack them together. The model's attention can then flow across both texts simultaneously. `truncation: true` + `max_length: 512` — BERT-based models have a fixed context window, excess tokens are cut off rather than crashing.
+
+**Forward pass — raw logit:**
+```typescript
+const output = await model(input)
+return output.logits.data[0]
+```
+One number per query-chunk pair. This is the raw relevance score before softmax. Higher = more relevant. There is no fixed range — scores are unbounded.
+
+**Running all pairs in parallel:**
+```typescript
+const scores = await Promise.all(
+  chunks.map(async (chunk) => {
+    const input = tokenizer(query, { text_pair: chunk.content, ... })
+    const output = await model(input)
+    return output.logits.data[0]
+  })
+)
+```
+One forward pass per chunk, all fired in parallel via `Promise.all`. For 20 chunks — 20 forward passes, results collected into `scores[]`.
+
+### Raw logit range — not 0 to 1
+
+Cross-encoder logits are unbounded — they can be large positive or large negative numbers. The absolute values don't matter — only relative ordering does.
+
+```
+chunk 1:  7.22   ← highly relevant
+chunk 2:  3.27   ← relevant
+chunk 3:  0.42   ← borderline
+chunk 4: -2.02   ← not relevant
+chunk 5: -3.88   ← not relevant
+```
+
+Threshold `score > 0` is used (not `> 0.5`) because zero is the natural midpoint for logits — positive = model thinks relevant, negative = model thinks not relevant. `0.5` is the midpoint for softmax probabilities, which is a different thing entirely.
+
+If you want 0–1 for display purposes, you can apply sigmoid: `1 / (1 + Math.exp(-score))`. But this is cosmetic only — the ranking does not change.
+
+### Singleton pattern for the model
+
+```typescript
+let tokenizer: any = null
+let model: any = null
+
+async function getReranker() {
+  if (!tokenizer || !model) {
+    tokenizer = await AutoTokenizer.from_pretrained("Xenova/ms-marco-MiniLM-L-6-v2")
+    model = await AutoModelForSequenceClassification.from_pretrained("Xenova/ms-marco-MiniLM-L-6-v2")
+  }
+  return { tokenizer, model }
+}
+```
+
+Loading the model reads hundreds of MB from disk and allocates memory. Same reason as the Prisma singleton — do it once, reuse across all requests.
+
+### Fallback when all chunks score negative
+
+```typescript
+const filtered = sorted.filter(chunk => chunk.score > 0)
+return filtered.length > 0 ? filtered : sorted.slice(0, 3)
+```
+
+If every chunk scores negative, the filter would return an empty array — the evaluator and generator would receive nothing and the graph would break. The fallback returns the top 3 regardless of score so the graph always has something to work with.
+
+### Why errors should not be silently caught in nodes
+
+The reranker initially had a `try-catch` that caught errors and returned `undefined`. When `rerankerNode` returned `{ chunks: undefined }`, LangGraph's state reducer skipped the update and kept the previous chunks from `retrieverNode`. The query appeared to work but the reranker was never actually running. Silent failures are worse than crashes — they give you false confidence that the system is working when it isn't.
+
+### The answer in one go
+> "A cross-encoder reranker rescores RRF candidates by encoding query and chunk together in a single forward pass — full attention across both. This is more accurate than bi-encoder cosine similarity but only feasible over small candidate sets (20–30). The `pipeline` abstraction was wrong for this model because it applied softmax to a single regression output, always producing 1.0. Using `AutoTokenizer` + `AutoModelForSequenceClassification` directly gives the raw logit — an unbounded relevance score where positive means relevant and negative means not. The model is loaded once via a singleton and reused. Threshold is `> 0` not `> 0.5` because logits are not softmax probabilities."
+
+### Revision Questions
+
+- What is the difference between a bi-encoder and a cross-encoder? When would you use each?
+- Why can't you run a cross-encoder over the entire Qdrant index?
+- Why does the `pipeline` abstraction give wrong results for `ms-marco-MiniLM-L-6-v2`?
+- What does `text_pair` do in the tokenizer call?
+- What is `max_length: 512` protecting against? What happens to tokens beyond the limit?
+- Why are cross-encoder logits unbounded? What range would softmax probabilities be in?
+- Why is the threshold `score > 0` instead of `score > 0.5`?
+- What happens if you apply sigmoid to a logit? Does the ranking change?
+- Why does the reranker use a singleton pattern for the model?
+- What happens when the reranker silently catches errors and returns `undefined`? Why is this worse than crashing?

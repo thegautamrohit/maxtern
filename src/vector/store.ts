@@ -31,7 +31,7 @@ export async function storeChunk(
           chunkId: savedChunk.id,
           documentId: documentid,
           sourceType: chunk.metadata.sourceType,
-          userId
+          userId,
         },
       },
     ],
@@ -42,6 +42,7 @@ export async function storeDocument(doc: Document): Promise<string> {
   const savedDocument = await prisma.document.create({
     data: {
       ...doc,
+      contentHash: doc.contentHash!,
     },
   });
   return savedDocument.id;

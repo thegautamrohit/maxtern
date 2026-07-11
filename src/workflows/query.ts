@@ -16,6 +16,7 @@ export async function handleQuery(
       answer,
       chunks: retrievedChunks,
       strategy: retrievalType,
+      queryReasoning,
     } = await compiledGraph.invoke({
       query: userQuery,
       history: transformedHistory,
@@ -43,11 +44,7 @@ export async function handleQuery(
     return {
       answer,
       debugInfo: {
-        retrievalReason: [
-          retrievalType === "summary"
-            ? "Summary keywords detected in query"
-            : "Precision request detected in query",
-        ],
+        retrievalReason: [queryReasoning],
         retrievedChunks: retrievedChunks.length,
         executionTime: executionTime,
         selectedRetriever: retrievalType,
