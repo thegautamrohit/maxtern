@@ -6,6 +6,7 @@ import {
   evaluatorNode,
   generatorNode,
   webSearchNode,
+  rerankerNode,
 } from "./nodes";
 import { routeAfterEval, routeAfterAnalyzer } from "./edges";
 
@@ -16,11 +17,15 @@ export const compiledGraph = new StateGraph(GraphState)
   .addNode("evaluator", evaluatorNode)
   .addNode("generator", generatorNode)
   .addNode("webSearch", webSearchNode)
+  .addNode("reranker", rerankerNode)
+
   // add edges
   .addEdge(START, "analyzer")
-  .addEdge("retriever", "evaluator")
+  .addEdge("retriever", "reranker")
+  .addEdge("reranker", "evaluator")
   .addEdge("webSearch", "generator")
   .addEdge("generator", END)
+  
   // conditional edges
   .addConditionalEdges("analyzer", routeAfterAnalyzer, {
     retrieve: "retriever",

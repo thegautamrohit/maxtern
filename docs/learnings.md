@@ -1241,3 +1241,123 @@ The `reasoning` field replaces the hardcoded `retrievalReason` strings in `Debug
 - Why is `reasoning` renamed to `queryReasoning` in graph state?
 - What was wrong with the keyword-based analyzer for queries like "walk me through the architecture"?
 - How does `reasoning` from the LLM improve the debug panel over the previous hardcoded strings?
+
+---
+
+## 24. Cross-Encoder Reranker — Raw Logits and Why `pipeline` Was Wrong
+
+### The problem with bi-encoder retrieval alone
+
+RRF fusion gives you the best-ranked chunks from dense + sparse search — but "best ranked" means "highest in both lists," not "most relevant to this specific query." A chunk can rank #1 in both lists because it shares many tokens with the query without actually answering it. The bi-encoder encodes query and chunk separately — they never attend to each other.
+
+### Bi-encoder vs cross-encoder
+
+| | Bi-encoder (retriever) | Cross-encoder (reranker) |
+|---|---|---|
+| How it scores | Query and chunk encoded separately, compared via cosine | Query and chunk encoded together in one forward pass |
+| Attends across | Query alone, chunk alone | Query AND chunk simultaneously |
+| Speed | Fast — chunk vectors precomputed at ingestion | Slower — forward pass per query-chunk pair at query time |
+| Accuracy | Good but approximate | Significantly more accurate |
+| Scale | Works over millions of chunks | Only feasible over small candidate sets (20–30) |
+
+This is why reranking is a second-stage filter. You cannot run a cross-encoder over all of Qdrant, but you can run it over the 20–30 candidates RRF already narrowed down.
+
+### Why the `pipeline` abstraction was wrong
+
+`@xenova/transformers` has a `pipeline("text-classification", model)` convenience wrapper. For `ms-marco-MiniLM-L-6-v2`, this was the wrong choice — the model is a **regression model** with a single output neuron, not a binary classifier. The pipeline applies softmax to that single value, and softmax of one value always equals 1.0. Every chunk scored 100% regardless of actual relevance.
+
+The fix: bypass the pipeline and use the model directly via `AutoTokenizer` + `AutoModelForSequenceClassification` to access the raw logit before any normalization.
+
+### How the implementation works
+
+**Tokenization — both texts together:**
+```typescript
+const input = tokenizer(query, {
+  text_pair: chunk.content,
+  truncation: true,
+  max_length: 512,
+  return_tensors: "pt"
+})
+```
+The cross-encoder receives query and chunk as a single concatenated input — `text_pair` tells the tokenizer to pack them together. The model's attention can then flow across both texts simultaneously. `truncation: true` + `max_length: 512` — BERT-based models have a fixed context window, excess tokens are cut off rather than crashing.
+
+**Forward pass — raw logit:**
+```typescript
+const output = await model(input)
+return output.logits.data[0]
+```
+One number per query-chunk pair. This is the raw relevance score before softmax. Higher = more relevant. There is no fixed range — scores are unbounded.
+
+**Running all pairs in parallel:**
+```typescript
+const scores = await Promise.all(
+  chunks.map(async (chunk) => {
+    const input = tokenizer(query, { text_pair: chunk.content, ... })
+    const output = await model(input)
+    return output.logits.data[0]
+  })
+)
+```
+One forward pass per chunk, all fired in parallel via `Promise.all`. For 20 chunks — 20 forward passes, results collected into `scores[]`.
+
+### Raw logit range — not 0 to 1
+
+Cross-encoder logits are unbounded — they can be large positive or large negative numbers. The absolute values don't matter — only relative ordering does.
+
+```
+chunk 1:  7.22   ← highly relevant
+chunk 2:  3.27   ← relevant
+chunk 3:  0.42   ← borderline
+chunk 4: -2.02   ← not relevant
+chunk 5: -3.88   ← not relevant
+```
+
+Threshold `score > 0` is used (not `> 0.5`) because zero is the natural midpoint for logits — positive = model thinks relevant, negative = model thinks not relevant. `0.5` is the midpoint for softmax probabilities, which is a different thing entirely.
+
+If you want 0–1 for display purposes, you can apply sigmoid: `1 / (1 + Math.exp(-score))`. But this is cosmetic only — the ranking does not change.
+
+### Singleton pattern for the model
+
+```typescript
+let tokenizer: any = null
+let model: any = null
+
+async function getReranker() {
+  if (!tokenizer || !model) {
+    tokenizer = await AutoTokenizer.from_pretrained("Xenova/ms-marco-MiniLM-L-6-v2")
+    model = await AutoModelForSequenceClassification.from_pretrained("Xenova/ms-marco-MiniLM-L-6-v2")
+  }
+  return { tokenizer, model }
+}
+```
+
+Loading the model reads hundreds of MB from disk and allocates memory. Same reason as the Prisma singleton — do it once, reuse across all requests.
+
+### Fallback when all chunks score negative
+
+```typescript
+const filtered = sorted.filter(chunk => chunk.score > 0)
+return filtered.length > 0 ? filtered : sorted.slice(0, 3)
+```
+
+If every chunk scores negative, the filter would return an empty array — the evaluator and generator would receive nothing and the graph would break. The fallback returns the top 3 regardless of score so the graph always has something to work with.
+
+### Why errors should not be silently caught in nodes
+
+The reranker initially had a `try-catch` that caught errors and returned `undefined`. When `rerankerNode` returned `{ chunks: undefined }`, LangGraph's state reducer skipped the update and kept the previous chunks from `retrieverNode`. The query appeared to work but the reranker was never actually running. Silent failures are worse than crashes — they give you false confidence that the system is working when it isn't.
+
+### The answer in one go
+> "A cross-encoder reranker rescores RRF candidates by encoding query and chunk together in a single forward pass — full attention across both. This is more accurate than bi-encoder cosine similarity but only feasible over small candidate sets (20–30). The `pipeline` abstraction was wrong for this model because it applied softmax to a single regression output, always producing 1.0. Using `AutoTokenizer` + `AutoModelForSequenceClassification` directly gives the raw logit — an unbounded relevance score where positive means relevant and negative means not. The model is loaded once via a singleton and reused. Threshold is `> 0` not `> 0.5` because logits are not softmax probabilities."
+
+### Revision Questions
+
+- What is the difference between a bi-encoder and a cross-encoder? When would you use each?
+- Why can't you run a cross-encoder over the entire Qdrant index?
+- Why does the `pipeline` abstraction give wrong results for `ms-marco-MiniLM-L-6-v2`?
+- What does `text_pair` do in the tokenizer call?
+- What is `max_length: 512` protecting against? What happens to tokens beyond the limit?
+- Why are cross-encoder logits unbounded? What range would softmax probabilities be in?
+- Why is the threshold `score > 0` instead of `score > 0.5`?
+- What happens if you apply sigmoid to a logit? Does the ranking change?
+- Why does the reranker use a singleton pattern for the model?
+- What happens when the reranker silently catches errors and returns `undefined`? Why is this worse than crashing?

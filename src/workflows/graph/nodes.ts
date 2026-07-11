@@ -6,6 +6,7 @@ import { z } from "zod";
 import { ChatOllama } from "@langchain/ollama";
 import { evaluationPrompt } from "@/prompts/prompt";
 import { webSearchTool } from "@/tools/web-search";
+import { getRerankChunks } from "@/retrieval/reranker";
 
 export const analyzerNode = async (state: GraphStateType) => {
   const { query } = state;
@@ -82,4 +83,14 @@ export const webSearchNode = async (state: GraphStateType) => {
   );
 
   return { chunks: parsedChunks };
+};
+
+export const rerankerNode = async (state: GraphStateType) => {
+  const { query, chunks } = state;
+
+  if (chunks.length === 0) return { chunks: [] };
+
+  const rerankedChunks = await getRerankChunks(query, chunks);
+
+  return { chunks: rerankedChunks };
 };
