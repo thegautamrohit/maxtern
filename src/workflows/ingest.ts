@@ -2,7 +2,7 @@ import { loadPDF } from "../ingestion/loaders/pdf-loader";
 import { loadWebsite } from "../ingestion/loaders/website-loader";
 import { githubLoader } from "../ingestion/loaders/github-loader";
 import { normalizeDocument } from "../ingestion/normalizers/document-normalizer";
-import { storeChunk, storeDocument } from "../vector/store";
+import { storeDocument } from "../vector/store";
 import { Chunk, Document, SourceType } from "../core/types";
 import { markdownChunk } from "@/chunking/markdown-chunker";
 import { recursiveChunk } from "@/chunking/recursive-chunker";
@@ -11,6 +11,11 @@ import { ensureCollections } from "@/vector/collection";
 import { computeSparseVector } from "@/embeddings/sparse-embedder";
 import { createHash } from "crypto";
 import prisma from "@/db/client";
+import {
+  markChunksVectorized,
+  storeChunksInPostgres,
+  upsertChunksInQdrant,
+} from "../vector/store";
 
 async function processSingleDocument(
   doc: Document,
@@ -32,11 +37,13 @@ async function processSingleDocument(
     });
 
     if (existingDoc) {
-      console.log(`Document with contentHash ${contentHash} already exists for this user. Skipping ingestion.`);
+      console.log(
+        `Document with contentHash ${contentHash} already exists for this user. Skipping ingestion.`,
+      );
       return [existingDoc.id];
     }
 
-    const storedDocId = await storeDocument({...normalisedDoc, contentHash});
+    const storedDocId = await storeDocument({ ...normalisedDoc, contentHash });
     const chunks =
       sourceType === "github"
         ? await markdownChunk(normalisedDoc)
@@ -50,17 +57,41 @@ async function processSingleDocument(
       computeSparseVector(chunk.content),
     );
 
-    await Promise.all(
-      chunks?.map(async (chunk: Chunk, index: number) => {
-        await storeChunk(
-          chunk,
-          vectors[index],
-          storedDocId,
-          sparseVectors[index],
-          doc.userId,
-        );
-      }),
-    );
+    const savedChunks = await prisma.$transaction(async (tx) => {
+      return await Promise.all(
+        chunks?.map(async (chunk: Chunk, index: number) => {
+          return await storeChunksInPostgres(tx, chunk, storedDocId);
+        }),
+      );
+    });
+
+    try {
+      await Promise.all(
+        chunks?.map(async (chunk, index) => {
+          return await upsertChunksInQdrant(
+            chunk,
+            savedChunks[index].id,
+            storedDocId,
+            sparseVectors[index],
+            vectors[index],
+            doc.userId,
+          );
+        }),
+      );
+
+      const savedIdsArr = savedChunks?.map((chunk: any) => chunk.id);
+      await markChunksVectorized(savedIdsArr);
+    } catch (error) {
+      await prisma.chunk.deleteMany({
+        where: {
+          id: {
+            in: savedChunks?.map((chunk: any) => chunk.id),
+          },
+        },
+      });
+
+      throw error;
+    }
 
     return [storedDocId];
   } catch (error) {

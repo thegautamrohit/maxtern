@@ -1361,3 +1361,110 @@ The reranker initially had a `try-catch` that caught errors and returned `undefi
 - What happens if you apply sigmoid to a logit? Does the ranking change?
 - Why does the reranker use a singleton pattern for the model?
 - What happens when the reranker silently catches errors and returns `undefined`? Why is this worse than crashing?
+
+---
+
+## 25. Transactional Ingestion — Two-Phase Write and Compensating Rollback
+
+### The problem
+
+The original ingestion loop wrote each chunk to PostgreSQL and Qdrant inside the same `Promise.all`:
+
+```typescript
+await Promise.all(chunks.map(async (chunk, i) => {
+  await prisma.chunk.create(...)   // PG write
+  await qdrant.upsert(...)         // Qdrant write
+}))
+```
+
+Two failure scenarios, two different problems:
+
+| Failure | Result |
+|---|---|
+| PostgreSQL fails mid-batch (e.g. chunk 4 of 10 throws) | Chunks 1–3 committed in PG, 4–10 never written. Orphaned partial data |
+| Qdrant fails after all PG writes commit | All chunk rows in PG, no vectors in Qdrant. Content stored but unretrievable |
+
+There is no rollback in either case. The system has no way to detect or recover from either state.
+
+### Why Prisma transactions fix the PostgreSQL problem
+
+`prisma.$transaction` wraps multiple writes in a single PostgreSQL transaction. All operations either commit together or roll back together:
+
+```typescript
+const savedChunks = await prisma.$transaction(async (tx) => {
+  return Promise.all(
+    chunks.map(chunk => tx.chunk.create({ data: { ...chunk, vectorized: false } }))
+  )
+})
+```
+
+Key points:
+- `tx` is a transaction-scoped Prisma client — same API as `prisma`, bound to the transaction
+- Use `tx.chunk.create` inside the callback, not `prisma.chunk.create` — using `prisma` inside would run outside the transaction boundary
+- The callback must `return` the result — without `return`, `savedChunks` is `undefined`
+- If any one write throws, PostgreSQL rolls back all writes automatically
+
+A single `deleteMany` or `updateMany` does not need a transaction — it is already atomic in PostgreSQL. Transactions are needed when multiple separate operations must all succeed or all fail together.
+
+### Why transactions cannot fix the Qdrant problem
+
+`prisma.$transaction` is PostgreSQL-only. Qdrant is a separate process with no connection to PostgreSQL's transaction log. Qdrant has no way to "join" a Postgres transaction — if Qdrant fails after the PG transaction commits, there is no shared mechanism to roll back.
+
+This is the cross-system consistency problem. The fix requires a different pattern.
+
+### The `vectorized` flag — compensating rollback
+
+Add `vectorized Boolean @default(false)` to the `Chunk` model. Ingestion becomes two explicit phases:
+
+**Phase 1 — PostgreSQL (inside transaction):**
+Write all chunks with `vectorized: false`. If PG fails — transaction rolls back, nothing committed.
+
+**Phase 2 — Qdrant (outside transaction):**
+Upsert all vectors. On success: flip `vectorized: true`. On failure: delete the PG rows and re-throw.
+
+```typescript
+// Phase 1 — atomic PG write
+const savedChunks = await prisma.$transaction(async (tx) => {
+  return Promise.all(chunks.map(chunk => tx.chunk.create({ data: { ...chunk, vectorized: false } })))
+})
+
+// Phase 2 — Qdrant upsert with compensating rollback
+try {
+  await Promise.all(chunks.map((chunk, i) => upsertChunksInQdrant(chunk, savedChunks[i].id, ...)))
+  await markChunksVectorised(savedChunks.map(c => c.id))
+} catch (error) {
+  await prisma.chunk.deleteMany({ where: { id: { in: savedChunks.map(c => c.id) } } })
+  throw error
+}
+```
+
+This is a **compensating transaction** — because you can't undo a committed PG write via Qdrant's failure, you compensate by explicitly reversing the PG write after the fact.
+
+### Why `upsertChunksInQdrant` must NOT swallow errors
+
+If `upsertChunksInQdrant` has a try/catch that logs and returns, the outer try/catch never sees the failure. `markChunksVectorised` runs anyway and `deleteMany` never executes. The function returns success. You end up with PG rows that have no vectors — exactly the broken state you were trying to prevent. Silent failures are worse than crashes.
+
+### Outbox Pattern — the production-grade version
+
+The compensating rollback approach is synchronous — the HTTP request blocks until both PG and Qdrant finish. If Qdrant is slow or temporarily down, the request times out.
+
+The production pattern is the **Outbox Pattern**:
+1. Write all chunks to PG with `vectorized: false` — return success to the client immediately
+2. A background worker (BullMQ + Redis) picks up `vectorized: false` rows, retries Qdrant, flips the flag on success
+
+The `vectorized` flag becomes the retry queue. The ingestion request is decoupled from Qdrant availability. This is #20 (Queue-based Ingestion) in the roadmap — the current compensating rollback is the synchronous version of the same idea.
+
+### The answer in one go
+> "Ingestion writes to two independent systems — PostgreSQL and Qdrant. For within-PG partial writes, `prisma.$transaction` solves the problem: all chunks commit or none do. For cross-system failure (PG succeeds, Qdrant fails), a `vectorized` flag enables a compensating rollback: all chunks are written to PG with `vectorized: false`, then Qdrant upserts run. On success, the flag flips to `true`. On failure, the PG rows are deleted and the error re-thrown. The cross-system failure can never be solved with a transaction — Qdrant has no connection to PostgreSQL's transaction boundary. The production version of this pattern is the Outbox Pattern: write to PG, return success, let a background worker handle Qdrant asynchronously."
+
+### Revision Questions
+
+- Why does `prisma.$transaction` not protect against Qdrant failure?
+- What does the `tx` parameter in the `$transaction` callback represent? What happens if you use `prisma` instead of `tx` inside the callback?
+- Why must the `$transaction` callback `return` its result?
+- A single `deleteMany` call — does it need its own transaction? Why or why not?
+- What is a compensating transaction? How does it differ from a database rollback?
+- What is the Outbox Pattern? How does the `vectorized` flag relate to it?
+- Why should `upsertChunksInQdrant` not have a try/catch that swallows errors?
+- What is the state of the system if `markChunksVectorised` runs after a Qdrant failure?
+- What does `vectorized: false` on a chunk row older than 1 hour tell you in production?

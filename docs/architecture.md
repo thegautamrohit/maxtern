@@ -59,6 +59,12 @@ User provides source (PDF path / Website URL / GitHub URL)
    Output: Document (cleaned)
         │
         ▼
+   [ Deduplication Check ] (#25)
+   SHA-256 hash of normalized content
+   prisma.document.findUnique({ userId_contentHash })
+   Duplicate → return existing documentId, skip ingestion
+        │
+        ▼
    [ PostgreSQL — Document saved ]
    prisma.document.create(...)
    Returns: documentId
@@ -75,10 +81,15 @@ User provides source (PDF path / Website URL / GitHub URL)
    Output: number[][] (one vector per chunk, 768 dims)
         │
         ▼
-   [ Store — parallel ]
-   For each chunk:
-     1. prisma.chunk.create(...)  → chunkId
-     2. qdrant.upsert("chunks", { id: chunkId, vector, payload })
+   [ Phase 1 — PostgreSQL Transaction ] (#26)
+   prisma.$transaction → all chunks written atomically with vectorized: false
+   Partial PG write impossible — all commit or none do
+        │
+        ▼
+   [ Phase 2 — Qdrant Upsert ] (#26)
+   Promise.all(upsertChunksInQdrant) for all chunks
+   Success → markChunksVectorised(chunkIds) → vectorized: true
+   Failure → deleteMany(chunkIds) rollback PG rows → throw
 ```
 
 ## Query Flow

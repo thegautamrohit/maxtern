@@ -72,6 +72,7 @@ id         String   @id @default(cuid())
 content    String   (chunk text)
 metadata   Json
 chunkIndex Int      (position within document)
+vectorized Boolean  @default(false) — flipped to true after Qdrant upsert confirms
 documentId String   (FK → Document.id)
 document   Document @relation(...)
 createdAt  DateTime @default(now())
@@ -211,7 +212,11 @@ Checks if "chunks" collection exists in Qdrant. Creates it if not (size: 768, Co
 
 **`storeDocument(doc)`** — saves Document to PostgreSQL, returns `document.id`
 
-**`storeChunk(chunk, vector, documentId)`** — saves Chunk to PostgreSQL, then upserts point to Qdrant with `id = chunk.id`, vector, and payload `{ chunkId, documentId, sourceType }`
+**`storeChunksInPostgres(tx, chunk, documentId)`** — writes a single chunk to PostgreSQL using the transaction client `tx`, with `vectorized: false`. Called inside `prisma.$transaction` in `ingest.ts`.
+
+**`upsertChunksInQdrant(chunk, chunkId, documentId, sparseVector, vector, userId)`** — upserts a single point to Qdrant. Called after the PG transaction commits. Does not swallow errors — throws on failure so the caller can rollback.
+
+**`markChunksVectorised(chunkIds)`** — flips `vectorized: true` for all given chunk IDs via `updateMany`. Called only after all Qdrant upserts confirm.
 
 ---
 
@@ -294,10 +299,12 @@ Main ingestion orchestrator. Entry point for all document ingestion.
 **`processSingleDocument(doc, sourceType)`** (internal)
 
 1. `normalizeDocument` — clean HTML entities, whitespace
-2. `storeDocument` — save to PostgreSQL, get `documentId`
-3. Chunk — GitHub → `markdownChunk`, PDF/Website → `recursiveChunk`
-4. `embedTexts` — batch embed all chunk contents
-5. `Promise.all(chunks.map(...storeChunk...))` — parallel store to PostgreSQL + Qdrant
+2. SHA-256 hash normalized content → check `userId_contentHash` unique constraint → skip if duplicate (#25)
+3. `storeDocument` — save to PostgreSQL, get `documentId`
+4. Chunk — GitHub → `markdownChunk`, PDF/Website → `recursiveChunk`
+5. `embedTexts` — batch embed all chunk contents
+6. **Phase 1** — `prisma.$transaction` writes all chunks to PostgreSQL with `vectorized: false` — atomic, all-or-nothing (#26)
+7. **Phase 2** — `Promise.all(upsertChunksInQdrant)` — batch upsert to Qdrant. On success: `markChunksVectorised` flips all to `true`. On failure: `deleteMany` rolls back PG chunk rows, error re-thrown (#26)
 
 GitHub returns `Document[]` → looped. PDF/Website return single `Document` → direct call.
 
@@ -433,7 +440,7 @@ Output: { "answer": "...", "debug": {} }
 | 23 | LLM-based Query Analyzer (replaces rule-based) | ✅ Done |
 | 24 | Cross-Encoder Reranker | ✅ Done |
 | 25 | Ingestion Deduplication (SHA-256 hash) | ✅ Done |
-| 26 | Transactional Ingestion (`vectorized` flag + rollback) | 🔴 Pending |
+| 26 | Transactional Ingestion (`vectorized` flag + rollback) | ✅ Done |
 | 27 | Authentication — Option A (Clerk gate) | ✅ Done |
 | 28 | Authentication — Option B (per-user document isolation) | ✅ Done |
 | 29 | Rate Limiting (Redis sliding window) | 🔴 Pending |
