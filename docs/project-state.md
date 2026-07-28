@@ -57,13 +57,16 @@ DATABASE_URL=postgresql://maxtern:maxtern@localhost:5432/maxtern
 
 **Document**
 ```
-id         String   @id @default(cuid())
-title      String
-content    String   (full raw text of the source)
-sourceType String   (pdf | website | github)
-metadata   Json
-chunk      Chunk[]  (relation)
-createdAt  DateTime @default(now())
+id          String   @id @default(uuid())
+userId      String   (Clerk userId — owner of this document)
+title       String
+content     String   (full raw text of the source)
+sourceType  String   (pdf | website | github)
+metadata    Json
+contentHash String   (SHA-256 of normalized content — deduplication key)
+chunk       Chunk[]  (relation)
+createdAt   DateTime @default(now())
+@@unique([userId, contentHash])
 ```
 
 **Chunk**
@@ -89,13 +92,14 @@ payload:
   chunkId     String   (PostgreSQL Chunk.id — for content lookup)
   documentId  String   (PostgreSQL Document.id)
   sourceType  String   (pdf | website | github)
+  userId      String   (Clerk userId — for per-user retrieval isolation)
 ```
 
 **Key design decision:** Qdrant stores only vectors + reference IDs. Content lives exclusively in PostgreSQL. Query time: Qdrant returns chunkIds → PostgreSQL fetches content.
 
 **Named vectors:** Both dense and sparse are stored as named vectors (`vector: { dense: [...], sparse: {...} }`). Required when storing multiple vector types per point.
 
-**Future:** `userId` will be added to Qdrant payload for per-user document isolation (multi-tenancy via Qdrant filter).
+**Multi-tenancy:** `userId` is stored in Qdrant payload and used as a filter at query time — retrieval is scoped to the authenticated user's documents only.
 
 ---
 
@@ -141,8 +145,10 @@ src/
       summary-retriever.ts          ✅ Done
     query-analyzer.ts               ✅ Done
     retrieval-router.ts             ✅ Done
-    reranker.ts                     🔴 Not started (V3)
+    reranker.ts                     ✅ Done (V3 — cross-encoder, Xenova/ms-marco-MiniLM-L-6-v2)
     query-rewriter.ts               🔴 Not started (V3)
+    retrievers/
+      dense-retriever.ts            ✅ Done
   llm/
     llm.ts                          ✅ Done
   prompts/
@@ -174,17 +180,27 @@ app/
 Shared TypeScript interfaces — database independent.
 
 ```typescript
+type SourceType = "pdf" | "website" | "github" | "web"
+
 interface Document {
+  userId: string
   title: string
   content: string
-  sourceType: "pdf" | "website" | "github"
+  sourceType: SourceType
   metadata: any
+  contentHash?: string    // optional — computed in ingest.ts, not set by loaders
 }
 
 interface Chunk {
   content: string
   chunkIndex: number
   metadata: any
+}
+
+interface QueryIntent {
+  strategy: RetrievalStrategy
+  confidence: number
+  reasoning: string
 }
 ```
 
@@ -337,13 +353,19 @@ Same flow as semantic retriever — `limit: 20` instead of 5. Kept as a separate
 
 ### `src/retrieval/query-analyzer.ts`
 
-Rule-based, no LLM. Checks if query contains summary keywords (`summary`, `summarise`, `overview`, `architecture`) using `.some()` — returns `"summary"` or `"semantic"` as `RetrievalStrategy`.
+LLM-based intent classifier (V3 — replaced rule-based keyword matching). Uses `ChatOllama` (`qwen3:4b`, temperature 0) with `withStructuredOutput` and a Zod schema. Returns `QueryIntent: { strategy, confidence, reasoning }`. The `reasoning` field flows into the debug panel as `retrievalReason`, replacing hardcoded strings.
 
 ---
 
 ### `src/retrieval/retrieval-router.ts`
 
 Takes `RetrievalStrategy` + `query`, calls the correct retriever, returns `Promise<RetrievedChunk[]>`.
+
+---
+
+### `src/retrieval/reranker.ts`
+
+Cross-encoder reranker (V3). Uses `Xenova/ms-marco-MiniLM-L-6-v2` via `@xenova/transformers` — loaded once via singleton (`AutoTokenizer` + `AutoModelForSequenceClassification`). Scores each query-chunk pair via a single forward pass producing a raw logit. Chunks sorted by logit descending, filtered by `score > 0`. Fallback to top 3 if all scores are negative. Sits between `retrieverNode` and `evaluatorNode` in the LangGraph pipeline.
 
 ---
 
@@ -361,12 +383,11 @@ Takes `RetrievalStrategy` + `query`, calls the correct retriever, returns `Promi
 
 ### `src/workflows/query.ts`
 
-`handleQuery(userQuery)` — end-to-end query orchestrator:
-1. `queryAnalyzer` → `RetrievalStrategy`
-2. `retrievalRouter` → `RetrievedChunk[]`
-3. `generateAnswer` → answer string
-4. Fetches document titles from PostgreSQL via Map (O(1) lookup, not N+1)
-5. Returns `{ answer, debugInfo: DebugInfo }` — tokens placeholder for now
+`handleQuery(userQuery, documentIds, userId, conversationHistory)` — end-to-end query orchestrator:
+1. `compiledGraph.invoke({ query, documentIds, userId })` — runs full LangGraph pipeline
+2. Destructures `{ answer, chunks, strategy, queryReasoning }` from graph output
+3. Fetches document titles from PostgreSQL via Map (O(1) lookup, not N+1)
+4. Returns `{ answer, debugInfo: DebugInfo }` with `retrievalReason` sourced from LLM reasoning
 
 ---
 
