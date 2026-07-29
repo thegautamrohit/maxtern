@@ -1683,3 +1683,66 @@ Route handlers should only contain routing logic — auth check, parse input, ca
 - Why is PDF file size checked before writing to `/tmp` rather than after?
 - Why does GitHub URL validation not need a DNS check but website URL validation does?
 - Where should validation logic live in a Next.js API route? Why not inline in the route handler?
+
+---
+
+## 29. Conversational Query Rewriting — Merging Rewrite + Classify into One LLM Call
+
+### The problem
+
+Follow-up queries contain references that only make sense with conversation context:
+
+```
+User: "What is JWT?"
+AI:   "JWT is a stateless token format..."
+User: "How does it compare to sessions?"
+```
+
+Qdrant embeds `"How does it compare to sessions?"` verbatim. `"it"` has no embedding meaning in isolation — the vector search has no idea `"it"` refers to JWT. Retrieval returns garbage.
+
+### Why merge rewriting with classification instead of a separate step
+
+The naive approach is a dedicated rewriter node before the analyzer — two LLM calls per query. But the query analyzer already reads the full query to classify intent. If you give it the history too, it can resolve references AND classify in the same forward pass.
+
+This means:
+- One LLM call instead of two — half the latency on conversational queries
+- The LLM classifies the *resolved* query, not the raw one — more accurate routing
+- No new node, no graph rewiring, no extra file
+
+The key insight: the two tasks are naturally sequenced — you need the resolved query to classify it correctly anyway.
+
+### How it works in the prompt
+
+The `queryIntentPrompt` now has two explicit jobs:
+
+1. **Rewrite** — if history exists and the query has references, produce a standalone version
+2. **Classify** — determine retrieval strategy for the (rewritten) query
+
+`MessagesPlaceholder("history")` injects the conversation turns between the system instruction and the human message. If history is empty, the LLM sees no prior turns and returns the query unchanged as `rewrittenQuery`.
+
+### Where `rewrittenQuery` flows through the system
+
+```
+analyzerNode → writes rewrittenQuery to graph state
+retrieverNode → uses rewrittenQuery for Qdrant embedding (not raw query)
+generatorNode → uses rewrittenQuery as the question passed to the LLM
+query.ts      → destructures rewrittenQuery, writes to QueryLog
+```
+
+The raw `query` stays in state too — it's the original user input. `rewrittenQuery` is what the system actually uses for retrieval and generation.
+
+### What happens when there's no history
+
+`rewrittenQuery` = original query unchanged. The LLM is instructed to return it as-is when no references exist. Zero overhead on stateless queries — same number of LLM calls, same latency.
+
+### The answer in one go
+> "Conversational query rewriting resolves pronouns and implicit references in follow-up queries before they reach the retriever. Instead of a dedicated rewriter node, rewriting is merged into the query analyzer — one LLM call receives the raw query plus conversation history and returns both the resolved `rewrittenQuery` and the intent classification. This saves one LLM call per conversational turn. `rewrittenQuery` flows through graph state and is used by the retriever for Qdrant embedding, the generator for answer generation, and the query logger for observability."
+
+### Revision Questions
+
+- Why does Qdrant fail to retrieve relevant chunks for follow-up queries like "how does it work"?
+- Why merge rewriting into the analyzer instead of adding a separate rewriter node?
+- What does `MessagesPlaceholder("history")` inject into the prompt, and what happens when history is empty?
+- Which query does `retrieverNode` use for Qdrant embedding — `query` or `rewrittenQuery`? Why?
+- If the rewriter produces a bad standalone query, which downstream steps are affected?
+- Why is `rewrittenQuery` stored in `QueryLog` rather than just `query`?

@@ -58,64 +58,59 @@ export const evaluationPrompt = ChatPromptTemplate.fromMessages([
 export const queryIntentPrompt = ChatPromptTemplate.fromMessages([
   [
     "system",
-    `
-             You are a query intent classifier for a Retrieval-Augmented Generation (RAG) system.
+    `You are a query intent classifier and query rewriter for a Retrieval-Augmented Generation (RAG) system.
 
-              Your task is to determine the most appropriate retrieval strategy for a user's query.
-             
-              ## Query
-              {query}
+        You have two jobs:
 
-              Return one of:
+        1. REWRITE: If the user's query relies on prior conversation (pronouns like "it", "that", implicit references, follow-up phrasing), rewrite it as a standalone query with all references resolved using the conversation history below. If the query is already standalone, or there is no history, return it unchanged.
 
-              1. semantic
-              Use when the user is asking for:
-              - a specific fact
-              - a definition
-              - an implementation detail
-              - a function/class explanation
-              - a comparison
-              - a configuration value
-              - debugging help
-              - code behavior
+        2. CLASSIFY: Determine the most appropriate retrieval strategy for the (rewritten) query.
 
-              These questions can usually be answered using one or a few highly relevant chunks.
+        Return one of:
 
-              Examples:
-              - What is JWT?
-              - How does authentication middleware work?
-              - What does processChunk() do?
-              - What port does Qdrant run on?
-              - Difference between dense and sparse vectors?
+        1. semantic
+        Use when the user is asking for:
+        - a specific fact
+        - a definition
+        - an implementation detail
+        - a function/class explanation
+        - a comparison
+        - a configuration value
+        - debugging help
+        - code behavior
 
-              2. summary
-              Use when the user wants a broad understanding of an entire topic,
-              document, module, workflow, architecture, or codebase.
+        Examples:
+        - What is JWT?
+        - How does authentication middleware work?
+        - What does processChunk() do?
+        - What port does Qdrant run on?
+        - Difference between dense and sparse vectors?
 
-              These questions usually require retrieving multiple related chunks.
+        2. summary
+        Use when the user wants a broad understanding of an entire topic, document, module, workflow, architecture, or codebase.
 
-              Examples:
-              - Summarize this document.
-              - Give me an overview of this codebase.
-              - Walk me through the architecture.
-              - Explain the ingestion pipeline.
-              - What is this repository about?
-              - Explain authentication from start to finish.
+        Examples:
+        - Summarize this document.
+        - Give me an overview of this codebase.
+        - Walk me through the architecture.
+        - Explain the ingestion pipeline.
+        - What is this repository about?
+        - Explain authentication from start to finish.
 
-              Rules:
-              - Classify based on user intent, not only keywords.
-              - If the query asks for an overall understanding, choose summary.
-              - If it asks for a specific answer, choose semantic.
-              - If mixed, choose the dominant intent.
-              - If uncertain, choose semantic.
+        Rules:
+        - Classify based on user intent, not only keywords.
+        - If uncertain, choose semantic.
 
-              Return ONLY valid JSON:
+        Return ONLY valid JSON:
 
-              {{
-                "strategy": "semantic" | "summary",
-                "confidence": 0.0-1.0,
-                "reasoning": "One short sentence."
-              }}
-    `,
+        {{
+          "rewrittenQuery": "standalone version of the query",
+          "strategy": "semantic" | "summary",
+          "confidence": 0.0-1.0,
+          "reasoning": "One short sentence."
+        }}
+`,
   ],
+  new MessagesPlaceholder("history"),
+  ["human", "{query}"],
 ]);

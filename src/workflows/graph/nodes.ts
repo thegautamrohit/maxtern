@@ -8,26 +8,31 @@ import { evaluationPrompt } from "@/prompts/prompt";
 import { webSearchTool } from "@/tools/web-search";
 import { getRerankChunks } from "@/retrieval/reranker";
 
-// Analyzes the query intent using an LLM classifier.
-// Returns a retrieval strategy ("semantic" or "summary") and the reasoning behind it.
+// Analyzes query intent AND rewrites the query if conversation history exists.
+// Rewriting resolves references ("it", "that", follow-ups) into a standalone query.
 // reasoning is renamed to queryReasoning to avoid naming collisions in shared graph state.
+// rewrittenQuery flows through state and is used by generatorNode instead of the raw query.
 export const analyzerNode = async (state: GraphStateType) => {
-  const { query } = state;
+  const { query, history } = state;
 
-  const { strategy, reasoning } = await queryAnalyzer(query);
+  const { strategy, reasoning, rewrittenQuery } = await queryAnalyzer(
+    query,
+    history,
+  );
 
-  return { strategy, queryReasoning: reasoning };
+  return { strategy, queryReasoning: reasoning, rewrittenQuery };
 };
 
-// Routes the query to the correct retriever based on the strategy set by analyzerNode.
-// Passes userId so Qdrant filters to only this user's chunks (per-user isolation).
-// documentIds scopes retrieval to the current session's ingested documents.
+// Routes to the correct retriever using the rewritten query (references resolved by analyzerNode).
+// Using rewrittenQuery instead of the raw query ensures Qdrant embeds the fully resolved intent —
+// "How does it compare to sessions?" → "How does JWT compare to session-based authentication?"
+// userId scopes search to this user's chunks only. documentIds scopes to the current session.
 export const retrieverNode = async (state: GraphStateType) => {
-  const { query, strategy, documentIds, userId } = state;
+  const { rewrittenQuery, strategy, documentIds, userId } = state;
 
   const retrievedChunks = await retrievalRouter(
     strategy,
-    query,
+    rewrittenQuery,
     userId,
     documentIds,
   );
@@ -69,9 +74,9 @@ export const evaluatorNode = async (state: GraphStateType) => {
 //   ambiguous → reranked vector chunks + web search chunks combined
 // The generator doesn't know or care which source the chunks came from — same call either way.
 export const generatorNode = async (state: GraphStateType) => {
-  const { query, chunks, history } = state;
+  const { rewrittenQuery, chunks, history } = state;
 
-  const answer = await generateAnswer(query, chunks, history);
+  const answer = await generateAnswer(rewrittenQuery, chunks, history);
 
   return { answer };
 };

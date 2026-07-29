@@ -482,7 +482,7 @@ Output: { "answer": "...", "debug": {} }
 | 27 | Authentication — Option A (Clerk gate) | ✅ Done |
 | 28 | Authentication — Option B (per-user document isolation) | ✅ Done |
 | 29 | Rate Limiting (Redis sliding window) | ✅ Done |
-| 30 | Conversational Query Rewriting | 🔴 Pending |
+| 30 | Conversational Query Rewriting | ✅ Done |
 | 31 | Ingestion Input Validation + SSRF protection | ✅ Done |
 | 32 | Persistent Query Logs (`query_logs` table) | ✅ Done |
 | 33 | Error Handling — typed errors, backoff, circuit breaker | 🔴 Pending |

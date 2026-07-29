@@ -809,23 +809,11 @@ Limit keys are scoped per `userId` once auth is in place. Before auth, scope to 
 
 ---
 
-### 7. Conversational Query Rewriting
+### 7. Conversational Query Rewriting ✅ Done
 
-**Problem:** V4 adds long-term memory, but no version adds query rewriting for conversation context. A follow-up query like "what did you say about that?" or "can you elaborate on the second point?" goes to Qdrant verbatim. Qdrant embeds "that" and "the second point" — terms with no semantic meaning in isolation — and returns garbage retrieval results. Memory without query rewriting is incomplete.
+**Problem:** Follow-up queries like "how does it compare to sessions?" or "can you elaborate on that?" go to Qdrant verbatim. Qdrant embeds "it" and "that" — terms with no semantic meaning in isolation — and returns garbage retrieval results.
 
-**Fix:** Add a query rewriting step before retrieval, activated when a conversation history exists.
-
-```
-Conversation history (last N turns) + current raw query
-  ↓
-[ Query Rewriter ] — single LLM call
-  ↓
-Standalone reformulated query (all references resolved)
-  ↓
-[ Query Analyzer ] → [ Retrieval Router ] → Qdrant
-```
-
-Example:
+**Fix:** Merged into the query analyzer — single LLM call does both rewriting and intent classification. No separate rewriter file, no extra LLM call, no extra node in the graph.
 
 ```
 History:    "Q: What is JWT? A: JWT is a stateless token..."
@@ -833,40 +821,42 @@ Raw query:  "How does it compare to sessions?"
 Rewritten:  "How does JWT compare to session-based authentication?"
 ```
 
-The rewriter is a cheap LLM call (haiku/mini) that outputs a single standalone query string. It only activates when `conversationHistory.length > 0` — stateless queries are unaffected.
+The prompt instructs the LLM to first resolve any references using conversation history, then classify the (resolved) intent. If no history exists or the query is already standalone, `rewrittenQuery` equals the original query unchanged.
 
-File: `src/retrieval/query-rewriter.ts` (new)
+**Implementation:**
+- `queryIntentPrompt` — two-job prompt with `MessagesPlaceholder("history")`. Returns `rewrittenQuery`, `strategy`, `confidence`, `reasoning` in one JSON response.
+- `queryAnalyzer(query, history)` — accepts `BaseMessage[]`, passes history to invoke. Zod schema captures all four fields.
+- `analyzerNode` — destructures and writes `rewrittenQuery` to graph state.
+- `retrieverNode` — uses `rewrittenQuery` for Qdrant embedding and search (not raw query).
+- `generatorNode` — uses `rewrittenQuery` as the query passed to the LLM for answer generation.
+- `QueryIntent` interface — `rewrittenQuery: string` added.
+- Graph state — `rewrittenQuery: Annotation<string>()` added.
+- `QueryLog` — `rewrittenQuery` now populated from graph output in `query.ts`.
 
-Updated query flow with V3 additions:
+**Updated query flow:**
 
 ```
 Raw user query + conversation history
         │
         ▼
-   [ Query Rewriter ]          ← NEW (V3) — skipped if no history
-   Resolves references, produces standalone query
+   [ analyzerNode ]             — rewrites query + classifies intent in one LLM call
+   Returns: rewrittenQuery, strategy, queryReasoning
+        │
+        ▼ (if documentIds)
+   [ retrieverNode ]            — searches Qdrant using rewrittenQuery
         │
         ▼
-   [ Query Analyzer ]          ← UPGRADED (V3) — LLM-based intent classification
-   Returns: strategy + confidence + reasoning
+   [ rerankerNode ]             — cross-encoder rescores candidates
         │
         ▼
-   [ Retrieval Router / LangGraph ]
+   [ evaluatorNode ]            — CRAG three-state classification
+        │
+        ├── correct   → generatorNode (vector chunks, rewrittenQuery)
+        ├── incorrect → webSearchNode → generatorNode (web chunks only)
+        └── ambiguous → webSearchNode → generatorNode (vector + web chunks combined)
         │
         ▼
-   [ Retriever ] → Qdrant top-20
-        │
-        ▼
-   [ Reranker ]               ← NEW (V3) — cross-encoder, dynamic K
-        │
-        ▼
-   [ LLM — Answer Generation ]
-        │
-        ▼
-   [ Answer Validator / Self-RAG ]    ← V4
-        │
-        ▼
-   [ Response + persisted query log ] ← NEW (V3)
+   [ Response + persisted QueryLog ]
 ```
 
 ---

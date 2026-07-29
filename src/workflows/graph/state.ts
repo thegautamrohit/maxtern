@@ -16,6 +16,7 @@ export const GraphState = Annotation.Root({
   documentIds: Annotation<string[]>(),
   userId: Annotation<string>(),
   evalReason: Annotation<string>(),
+  rewrittenQuery: Annotation<string>(),
 });
 
 export type GraphStateType = typeof GraphState.State;

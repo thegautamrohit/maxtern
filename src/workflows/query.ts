@@ -20,6 +20,7 @@ export async function handleQuery(
       chunks: retrievedChunks,
       strategy: retrievalType,
       queryReasoning,
+      rewrittenQuery
     } = await compiledGraph.invoke({
       query: userQuery,
       history: transformedHistory,
@@ -54,6 +55,7 @@ export async function handleQuery(
     const logData = {
       userId,
       query: userQuery,
+      rewrittenQuery,
       strategy: retrievalType,
       retrievedChunks: retrievedChunks.length,
       topScore: isRagUsed

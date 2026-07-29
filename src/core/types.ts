@@ -62,6 +62,7 @@ interface QueryIntent {
   strategy: RetrievalStrategy;
   confidence: number;
   reasoning: string;
+  rewrittenQuery: string;
 }
 
 interface QueryLog {

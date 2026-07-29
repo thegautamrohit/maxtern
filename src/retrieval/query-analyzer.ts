@@ -2,6 +2,7 @@ import { ChatOllama } from "@langchain/ollama";
 import { queryIntentPrompt } from "@/prompts/prompt";
 import { z } from "zod";
 import { QueryIntent } from "@/core/types";
+import { BaseMessage } from "@langchain/core/messages";
 
 // Temperature 0 — classification is a deterministic judgment, not a creative task.
 // The same query should always produce the same strategy.
@@ -23,16 +24,20 @@ const schema = z.object({
   reasoning: z
     .string()
     .describe("The reasoning behind the classification in one short sentence"),
+  rewrittenQuery: z.string().describe("Standalone version of the query"),
 });
 
-export async function queryAnalyzer(query: string): Promise<QueryIntent> {
+export async function queryAnalyzer(
+  query: string,
+  history: BaseMessage[],
+): Promise<QueryIntent> {
   const normalizedQuery = query.toLowerCase();
 
   // withStructuredOutput pipes the LLM output through the Zod schema —
   // LangChain validates and coerces the JSON response before returning it.
   const chain = queryIntentPrompt.pipe(LLM.withStructuredOutput(schema));
 
-  const result = await chain.invoke({ query: normalizedQuery });
+  const result = await chain.invoke({ query: normalizedQuery, history });
 
   return result;
 }
