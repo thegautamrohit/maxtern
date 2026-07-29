@@ -153,6 +153,9 @@ src/
     llm.ts                          ✅ Done
   prompts/
     prompt.ts                       ✅ Done
+  lib/
+    utils.ts                        ✅ Done (Tailwind cn helper)
+    ingest-validation.ts            ✅ Done (V3 — URL validation + SSRF protection)
   observability/                    ⏸ Deferred to V3
 
 app/
@@ -381,6 +384,18 @@ Cross-encoder reranker (V3). Uses `Xenova/ms-marco-MiniLM-L-6-v2` via `@xenova/t
 
 ---
 
+### `src/lib/ingest-validation.ts`
+
+Validation utilities for `POST /api/ingest` — kept separate to avoid stretching the route handler.
+
+- **`validateWebsiteUrl(source)`** — async. Checks: valid URL format → `https:` protocol only → hostname not in private IP ranges (regex) → DNS resolution check (SSRF: resolved IP also checked against private ranges). Returns error string or `null`.
+- **`validateGithubUrl(source)`** — sync. Checks: valid URL format → hostname must be `github.com` → `https:` protocol only. Returns error string or `null`.
+- **`MAX_PDF_SIZE`** — 50MB constant used in route for file size check.
+
+SSRF protection covers: `127.x`, `10.x`, `192.168.x`, `172.16–31.x`, `localhost`, `::1`. DNS lookup catches domains that resolve to private IPs even if the hostname looks public.
+
+---
+
 ### `src/workflows/query.ts`
 
 `handleQuery(userQuery, documentIds, userId, conversationHistory)` — end-to-end query orchestrator:
@@ -466,7 +481,7 @@ Output: { "answer": "...", "debug": {} }
 | 28 | Authentication — Option B (per-user document isolation) | ✅ Done |
 | 29 | Rate Limiting (Redis sliding window) | 🔴 Pending |
 | 30 | Conversational Query Rewriting | 🔴 Pending |
-| 31 | Ingestion Input Validation + SSRF protection | 🔴 Pending |
+| 31 | Ingestion Input Validation + SSRF protection | ✅ Done |
 | 32 | Persistent Query Logs (`query_logs` table) | 🔴 Pending |
 | 33 | Error Handling — typed errors, backoff, circuit breaker | 🔴 Pending |
 | 34 | Observability Layer (debug storage + dashboards) | 🔴 Pending |

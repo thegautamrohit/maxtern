@@ -1468,3 +1468,80 @@ The `vectorized` flag becomes the retry queue. The ingestion request is decouple
 - Why should `upsertChunksInQdrant` not have a try/catch that swallows errors?
 - What is the state of the system if `markChunksVectorised` runs after a Qdrant failure?
 - What does `vectorized: false` on a chunk row older than 1 hour tell you in production?
+
+---
+
+## 26. Ingestion Input Validation and SSRF Protection
+
+### Why validate at the API boundary
+
+The ingestion pipeline is expensive — a single request triggers loading, normalization, chunking, embedding, and two database writes. Letting invalid input reach any of those stages wastes compute and can cause unpredictable failures deep in the pipeline. Validation at the route handler level rejects bad input before anything else runs.
+
+### The three validation layers
+
+**PDF — size and type check (sync):**
+```typescript
+if (!file.name.toLowerCase().endsWith(".pdf")) → 400
+if (file.size > 50 * 1024 * 1024) → 400           // 50MB limit
+```
+Both checked before the file is written to `/tmp`. No disk I/O wasted on invalid uploads.
+
+**GitHub — URL structure check (sync):**
+```typescript
+new URL(source)               // throws if malformed
+parsed.hostname !== "github.com" → 400
+parsed.protocol !== "https:" → 400
+```
+Blocks internal git servers, self-hosted GitLab, and typosquatted domains. Pure string check — no network call needed.
+
+**Website — URL structure + SSRF check (async):**
+Same structure check as GitHub, plus two layers of SSRF protection.
+
+### What is SSRF
+
+SSRF (Server-Side Request Forgery) is an attack where a user tricks your server into making a request to an internal resource — your database, your admin panel, AWS metadata endpoint, or any service on your private network that is not exposed to the internet.
+
+Without validation, an attacker can send:
+```
+POST /api/ingest
+{ "type": "website", "source": "http://192.168.1.1/admin" }
+```
+Your server fetches that URL — from inside your network, bypassing any firewall. The response content gets chunked, embedded, and stored — potentially leaking internal data into the knowledge base.
+
+### Two-layer SSRF protection
+
+**Layer 1 — hostname regex (before any network call):**
+```typescript
+const PRIVATE_IP_RANGES = [
+  /^127\./, /^10\./, /^192\.168\./,
+  /^172\.(1[6-9]|2\d|3[01])\./, /^::1$/, /^localhost$/i,
+]
+```
+Catches obviously internal hostnames and IPs directly in the URL.
+
+**Layer 2 — DNS resolution check:**
+```typescript
+const addresses = await dns.lookup(parsed.hostname, { all: true })
+for (const { address } of addresses) {
+  if (isPrivateHost(address)) → 400
+}
+```
+An attacker can register `evil.com` pointing to `192.168.1.1`. Layer 1 passes — `evil.com` looks public. Layer 2 resolves the DNS and catches the private IP. Without this, Layer 1 is trivially bypassed.
+
+`{ all: true }` returns all DNS records, not just the first — a hostname can have multiple A records, some public, some private.
+
+### Why validation lives in `src/lib/ingest-validation.ts`
+
+Route handlers should only contain routing logic — auth check, parse input, call validation, call service, return response. Embedding validation functions inline stretches the file and makes it harder to test the validation logic independently. A dedicated file keeps responsibilities separate and the route readable.
+
+### The answer in one go
+> "Ingestion validation protects against two classes of problems: bad input reaching expensive pipeline stages, and SSRF attacks where an attacker tricks the server into fetching internal resources. PDF validation checks file type and size before any disk I/O. GitHub URLs are validated for hostname and protocol — pure string checks. Website URLs get an additional two-layer SSRF check: a regex against known private IP ranges, and a DNS resolution check that catches public-looking domains that resolve to private IPs. All validation runs before `ingestDocument` is called. Validation logic lives in `src/lib/ingest-validation.ts` to keep the route handler clean."
+
+### Revision Questions
+
+- What is SSRF? Give a concrete example of how it can be exploited via an ingestion endpoint.
+- Why is a hostname regex check alone insufficient SSRF protection?
+- What does `dns.lookup(hostname, { all: true })` return? Why `all: true`?
+- Why is PDF file size checked before writing to `/tmp` rather than after?
+- Why does GitHub URL validation not need a DNS check but website URL validation does?
+- Where should validation logic live in a Next.js API route? Why not inline in the route handler?
