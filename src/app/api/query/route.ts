@@ -3,6 +3,7 @@ import { handleQuery } from "@/workflows/query";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { Message } from "@/types/chat";
 import { auth } from "@clerk/nextjs/server";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   try {
@@ -10,6 +11,16 @@ export async function POST(request: NextRequest) {
 
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { success, reset } = await checkRateLimit(userId, "query");
+
+    if (!success) {
+      const retryAfter = Math.ceil((reset - Date.now()) / 1000);
+      return NextResponse.json(
+        { error: `Too many requests. Retry after ${retryAfter} seconds` },
+        { status: 429 },
+      );
     }
 
     const { query, documentIds, history } = await request.json();

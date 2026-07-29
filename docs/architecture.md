@@ -35,6 +35,8 @@ The core principle: **every query is analyzed before retrieval happens**. The sy
 | Relational DB | PostgreSQL via Prisma 6 + PrismaPg adapter |
 | Embeddings | Ollama (nomic-embed-text) → OpenAI in production |
 | LLM | OpenAI / Anthropic / Gemini |
+| Auth | Clerk v7 (`@clerk/nextjs@^7`) |
+| Rate Limiting | Upstash Redis + `@upstash/ratelimit` (sliding window) |
 | Infra | Docker Compose (local) |
 
 ---
@@ -807,23 +809,11 @@ Limit keys are scoped per `userId` once auth is in place. Before auth, scope to 
 
 ---
 
-### 7. Conversational Query Rewriting
+### 7. Conversational Query Rewriting ✅ Done
 
-**Problem:** V4 adds long-term memory, but no version adds query rewriting for conversation context. A follow-up query like "what did you say about that?" or "can you elaborate on the second point?" goes to Qdrant verbatim. Qdrant embeds "that" and "the second point" — terms with no semantic meaning in isolation — and returns garbage retrieval results. Memory without query rewriting is incomplete.
+**Problem:** Follow-up queries like "how does it compare to sessions?" or "can you elaborate on that?" go to Qdrant verbatim. Qdrant embeds "it" and "that" — terms with no semantic meaning in isolation — and returns garbage retrieval results.
 
-**Fix:** Add a query rewriting step before retrieval, activated when a conversation history exists.
-
-```
-Conversation history (last N turns) + current raw query
-  ↓
-[ Query Rewriter ] — single LLM call
-  ↓
-Standalone reformulated query (all references resolved)
-  ↓
-[ Query Analyzer ] → [ Retrieval Router ] → Qdrant
-```
-
-Example:
+**Fix:** Merged into the query analyzer — single LLM call does both rewriting and intent classification. No separate rewriter file, no extra LLM call, no extra node in the graph.
 
 ```
 History:    "Q: What is JWT? A: JWT is a stateless token..."
@@ -831,40 +821,42 @@ Raw query:  "How does it compare to sessions?"
 Rewritten:  "How does JWT compare to session-based authentication?"
 ```
 
-The rewriter is a cheap LLM call (haiku/mini) that outputs a single standalone query string. It only activates when `conversationHistory.length > 0` — stateless queries are unaffected.
+The prompt instructs the LLM to first resolve any references using conversation history, then classify the (resolved) intent. If no history exists or the query is already standalone, `rewrittenQuery` equals the original query unchanged.
 
-File: `src/retrieval/query-rewriter.ts` (new)
+**Implementation:**
+- `queryIntentPrompt` — two-job prompt with `MessagesPlaceholder("history")`. Returns `rewrittenQuery`, `strategy`, `confidence`, `reasoning` in one JSON response.
+- `queryAnalyzer(query, history)` — accepts `BaseMessage[]`, passes history to invoke. Zod schema captures all four fields.
+- `analyzerNode` — destructures and writes `rewrittenQuery` to graph state.
+- `retrieverNode` — uses `rewrittenQuery` for Qdrant embedding and search (not raw query).
+- `generatorNode` — uses `rewrittenQuery` as the query passed to the LLM for answer generation.
+- `QueryIntent` interface — `rewrittenQuery: string` added.
+- Graph state — `rewrittenQuery: Annotation<string>()` added.
+- `QueryLog` — `rewrittenQuery` now populated from graph output in `query.ts`.
 
-Updated query flow with V3 additions:
+**Updated query flow:**
 
 ```
 Raw user query + conversation history
         │
         ▼
-   [ Query Rewriter ]          ← NEW (V3) — skipped if no history
-   Resolves references, produces standalone query
+   [ analyzerNode ]             — rewrites query + classifies intent in one LLM call
+   Returns: rewrittenQuery, strategy, queryReasoning
+        │
+        ▼ (if documentIds)
+   [ retrieverNode ]            — searches Qdrant using rewrittenQuery
         │
         ▼
-   [ Query Analyzer ]          ← UPGRADED (V3) — LLM-based intent classification
-   Returns: strategy + confidence + reasoning
+   [ rerankerNode ]             — cross-encoder rescores candidates
         │
         ▼
-   [ Retrieval Router / LangGraph ]
+   [ evaluatorNode ]            — CRAG three-state classification
+        │
+        ├── correct   → generatorNode (vector chunks, rewrittenQuery)
+        ├── incorrect → webSearchNode → generatorNode (web chunks only)
+        └── ambiguous → webSearchNode → generatorNode (vector + web chunks combined)
         │
         ▼
-   [ Retriever ] → Qdrant top-20
-        │
-        ▼
-   [ Reranker ]               ← NEW (V3) — cross-encoder, dynamic K
-        │
-        ▼
-   [ LLM — Answer Generation ]
-        │
-        ▼
-   [ Answer Validator / Self-RAG ]    ← V4
-        │
-        ▼
-   [ Response + persisted query log ] ← NEW (V3)
+   [ Response + persisted QueryLog ]
 ```
 
 ---
@@ -889,33 +881,38 @@ Returns `400` with a structured error message on any validation failure.
 
 ---
 
-### 9. Persistent Query Logs and Observability
+### 9. Persistent Query Logs and Observability ✅ Done
 
 **Problem:** The debug layer in V1 captures rich data — retrieval scores, token usage, latency, selected strategy — but none of it is ever stored. Across all versions, this data exists only in the API response and the frontend debug panel. There is no ability to answer: which queries are failing? What is average retrieval score over time? Which documents get queried most? Which chunks are never retrieved and may indicate chunking problems?
 
-**Fix:** Persist every query execution to a `query_logs` table.
+**Fix:** Persist every query execution to a `QueryLog` table.
 
-```typescript
+```prisma
 model QueryLog {
-  id                String   @id @default(cuid())
-  userId            String
-  query             String                          // raw user query
-  rewrittenQuery    String?                         // post-rewriter query (V3)
-  strategy          String                          // factual | summary | comparative...
-  retrievedChunks   Int
-  topScore          Float                           // highest Qdrant similarity score
-  avgScore          Float                           // average across retrieved chunks
-  rerankerTopScore  Float?                          // top cross-encoder score (V3)
-  promptTokens      Int
-  completionTokens  Int
-  estimatedCost     String
-  executionTimeMs   Int
-  ragUsed           Boolean
-  createdAt         DateTime @default(now())
+  id               String   @id @default(uuid())
+  userId           String
+  query            String
+  rewrittenQuery   String?
+  strategy         String
+  retrievedChunks  Int
+  topScore         Float
+  avgScore         Float
+  rerankerTopScore Float?
+  promptTokens     Int
+  completionTokens Int
+  estimatedCost    String
+  executionTimeMs  Int
+  ragUsed          Boolean
+  createdAt        DateTime @default(now())
 }
 ```
 
 This table powers a real feedback loop: low `avgScore` queries reveal knowledge base gaps. High `executionTimeMs` outliers identify bottlenecks. Zero-retrieval queries (`ragUsed: false`) reveal when the query analyzer is misrouting.
+
+**Implementation:**
+- `src/lib/query-logger.ts` — `logQuery(data: QueryLog)` writes the row. Wrapped in try/catch — a logging failure never breaks the query response.
+- `src/workflows/query.ts` — builds `logData` after `compiledGraph.invoke` completes. `topScore` and `avgScore` are guarded against empty chunk arrays (`ragUsed: false` path).
+- `rewrittenQuery` and `rerankerTopScore` are nullable — populated when query rewriting (#30) and reranker scores are available.
 
 **Drop-in alternative:** Langfuse or Helicone — both integrate via a single wrapper around the LLM call and capture the full trace automatically.
 

@@ -957,6 +957,144 @@ One place to change, all interfaces stay consistent. `as const` is needed when a
 
 ---
 
+## 28. Persistent Query Logs — Observability Without Noise
+
+### Why log query executions
+
+The debug panel in the frontend shows retrieval scores, chunk counts, and latency per query — but only while that response is on screen. Once the page refreshes or the session ends, that data is gone. Without persistence you cannot answer:
+
+- Which queries consistently get low retrieval scores (knowledge base gaps)?
+- Which queries trigger the CRAG web search fallback (retrieval failing)?
+- What is average latency over time (performance regressions)?
+- Which users are making the most queries (usage patterns)?
+
+Persisting to a `QueryLog` table turns ephemeral response data into a queryable history.
+
+### The never-throw pattern for logging
+
+Logging is a side effect — it must never affect the primary operation. If `logQuery` throws (e.g. Prisma connection blip), the user's query response should still be returned. The fix is to wrap the DB write in try/catch and only `console.error` on failure:
+
+```typescript
+export const logQuery = async (data: QueryLog): Promise<void> => {
+  try {
+    await prisma.queryLog.create({ data })
+  } catch (error) {
+    console.error("Error logging query:", error)
+  }
+}
+```
+
+This is a general principle: any non-critical side effect (analytics, audit logs, metrics) should be fire-and-forget. Fail silently, surface via logs, never propagate to the caller.
+
+### Guard computed fields against empty arrays
+
+`topScore` and `avgScore` are computed from the retrieved chunks array. When `ragUsed` is false (no retrieval happened), the array is empty — `.sort()[0].score` crashes with `Cannot read properties of undefined`, and `reduce() / 0` gives `NaN`.
+
+Always guard score computations behind the `isRagUsed` check:
+
+```typescript
+topScore: isRagUsed
+  ? retrievedChunks.sort((a, b) => b.score - a.score)[0].score
+  : 0,
+avgScore: isRagUsed
+  ? retrievedChunks.reduce((acc, c) => acc + c.score, 0) / retrievedChunks.length
+  : 0,
+```
+
+Zero is a valid sentinel value here — a query with no retrieval genuinely has a score of zero.
+
+### Nullable fields for future features
+
+`rewrittenQuery` and `rerankerTopScore` are `String?` and `Float?` in the schema. They're null now — `rewrittenQuery` gets populated when query rewriting (#30) is wired in, `rerankerTopScore` when reranker scores are surfaced. Designing nullable columns upfront avoids schema migrations later when those features land.
+
+### The answer in one go
+> "Query logs persist the execution trace of every query to PostgreSQL — retrieval scores, strategy, latency, token usage, ragUsed flag. The logger wraps the DB write in try/catch so a logging failure never breaks the query response. Score fields are guarded against empty chunk arrays on the no-retrieval path. Nullable columns for rewrittenQuery and rerankerTopScore are left as null stubs until those features are implemented, avoiding future migrations."
+
+### Revision Questions
+
+- Why should a logging function never throw? What is the principle behind this?
+- What happens if you compute `arr.sort()[0].score` on an empty array? How do you guard against it?
+- Why use `0` as the sentinel value for `topScore`/`avgScore` when no retrieval happened?
+- What does `ragUsed: false` in a QueryLog row tell you about the query flow?
+- Why are `rewrittenQuery` and `rerankerTopScore` nullable in the schema from the start?
+- What is the difference between `logQuery` failing silently vs the query handler failing silently? Why is one acceptable and the other not?
+
+---
+
+## 27. Rate Limiting — Redis Sliding Window and Why In-Memory Doesn't Work
+
+### The problem with in-memory counters
+
+Next.js runs on multiple server instances in production (Vercel, AWS, etc. load balance across workers). Each instance has its own memory — they do not share state. If each instance tracks its own counter, a user can hit instance A 30 times and instance B 30 times — each instance thinks the limit hasn't been reached, the user effectively has no limit.
+
+Rate limiting state must live outside the process, in a shared store all instances can read and write. That's Redis.
+
+### The sliding window algorithm
+
+Three algorithms exist for rate limiting:
+
+**Fixed window:** Divide time into fixed slots (e.g., every 60s). Count requests per slot. Problem: a user can fire 30 requests at second 59 and 30 more at second 61 — 60 requests in 2 seconds, both windows allow it.
+
+**Token bucket:** Each user has a bucket of tokens, refilled at a constant rate. Allows controlled bursting. Complex to implement correctly in a distributed system.
+
+**Sliding window:** The window follows the current time. At any moment, look back exactly N seconds and count. No boundary exploit. This is what `@upstash/ratelimit` implements.
+
+### How Redis implements sliding window — sorted sets
+
+Redis stores each user's request history in a **sorted set** — a data structure where every item (member) has a numeric score. For rate limiting:
+
+- **Key** = `ratelimit:query:userId` — one sorted set per user per endpoint
+- **Member** = unique request ID (random string)
+- **Score** = Unix timestamp in milliseconds when that request happened
+
+On every request, three operations happen atomically:
+
+1. **Remove expired entries** — delete all members with score < `(now - windowMs)`. These are outside the window.
+2. **Add new request** — insert a new member with score = current timestamp.
+3. **Count** — `ZCOUNT key min max` counts all members in the window. If count > limit → 429.
+
+The count is never stored explicitly — it's always derived from how many members currently exist in the window. The sorted set is a log of timestamps, not a counter.
+
+### Why one sorted set per user per endpoint
+
+Two routes have different limits — query (30/min) and ingest (5/5min). Using a separate key prefix per endpoint (`ratelimit:query:userId` vs `ratelimit:ingest:userId`) means each endpoint tracks independently. Two different users also get completely separate sorted sets — User A's count never affects User B's.
+
+The key encodes identity. The sorted set contents encode history.
+
+### Retry-After header — operator precedence matters
+
+When returning 429, include a `Retry-After` header telling the client how many seconds to wait:
+
+```typescript
+// WRONG — divides only Date.now(), then subtracts
+Math.ceil(reset - Date.now() / 1000)
+
+// CORRECT — converts both to seconds first, then subtracts
+Math.ceil((reset - Date.now()) / 1000)
+```
+
+`reset` is a Unix timestamp in milliseconds. `Date.now()` is also in milliseconds. Dividing by 1000 converts the difference to seconds. Missing the parentheses means you're subtracting milliseconds from milliseconds-then-divided-by-1000 — mixing units, wrong result.
+
+### Upstash — why not self-hosted Redis
+
+Next.js serverless functions (Vercel, etc.) cannot maintain persistent TCP connections — they are stateless, short-lived processes. Traditional Redis clients use persistent TCP sockets. Upstash provides an HTTP-based Redis API that works in serverless environments. `@upstash/redis` communicates via REST instead of TCP — each call is a stateless HTTP request. Functionally identical to Redis from the application's perspective.
+
+### The answer in one go
+> "Rate limiting state must be shared across all server instances — in-memory counters break under load balancing. Redis sliding window stores each user's request timestamps in a sorted set keyed by userId and endpoint. On every request: remove expired entries, add current timestamp, count what's left. If count exceeds the limit, return 429 with a Retry-After header computed as `Math.ceil((reset - Date.now()) / 1000)`. Upstash Redis is used instead of self-hosted Redis because serverless environments cannot maintain persistent TCP connections — Upstash provides an HTTP-based API. Separate sorted set keys per endpoint and per userId ensure each limit operates independently."
+
+### Revision Questions
+
+- Why does in-memory rate limiting break under horizontal scaling?
+- What is the difference between fixed window and sliding window rate limiting? What attack does sliding window prevent?
+- How does Redis implement a sliding window — what data structure and what three operations?
+- Why is the count derived from the sorted set rather than stored explicitly?
+- Why is `ratelimit:query:userId` a separate key from `ratelimit:ingest:userId`?
+- What is the operator precedence bug in `Math.ceil(reset - Date.now() / 1000)` and how do you fix it?
+- Why does Upstash exist and why can't you use a standard Redis client in a serverless Next.js function?
+- What should a 429 response include beyond the status code?
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
@@ -1545,3 +1683,66 @@ Route handlers should only contain routing logic — auth check, parse input, ca
 - Why is PDF file size checked before writing to `/tmp` rather than after?
 - Why does GitHub URL validation not need a DNS check but website URL validation does?
 - Where should validation logic live in a Next.js API route? Why not inline in the route handler?
+
+---
+
+## 29. Conversational Query Rewriting — Merging Rewrite + Classify into One LLM Call
+
+### The problem
+
+Follow-up queries contain references that only make sense with conversation context:
+
+```
+User: "What is JWT?"
+AI:   "JWT is a stateless token format..."
+User: "How does it compare to sessions?"
+```
+
+Qdrant embeds `"How does it compare to sessions?"` verbatim. `"it"` has no embedding meaning in isolation — the vector search has no idea `"it"` refers to JWT. Retrieval returns garbage.
+
+### Why merge rewriting with classification instead of a separate step
+
+The naive approach is a dedicated rewriter node before the analyzer — two LLM calls per query. But the query analyzer already reads the full query to classify intent. If you give it the history too, it can resolve references AND classify in the same forward pass.
+
+This means:
+- One LLM call instead of two — half the latency on conversational queries
+- The LLM classifies the *resolved* query, not the raw one — more accurate routing
+- No new node, no graph rewiring, no extra file
+
+The key insight: the two tasks are naturally sequenced — you need the resolved query to classify it correctly anyway.
+
+### How it works in the prompt
+
+The `queryIntentPrompt` now has two explicit jobs:
+
+1. **Rewrite** — if history exists and the query has references, produce a standalone version
+2. **Classify** — determine retrieval strategy for the (rewritten) query
+
+`MessagesPlaceholder("history")` injects the conversation turns between the system instruction and the human message. If history is empty, the LLM sees no prior turns and returns the query unchanged as `rewrittenQuery`.
+
+### Where `rewrittenQuery` flows through the system
+
+```
+analyzerNode → writes rewrittenQuery to graph state
+retrieverNode → uses rewrittenQuery for Qdrant embedding (not raw query)
+generatorNode → uses rewrittenQuery as the question passed to the LLM
+query.ts      → destructures rewrittenQuery, writes to QueryLog
+```
+
+The raw `query` stays in state too — it's the original user input. `rewrittenQuery` is what the system actually uses for retrieval and generation.
+
+### What happens when there's no history
+
+`rewrittenQuery` = original query unchanged. The LLM is instructed to return it as-is when no references exist. Zero overhead on stateless queries — same number of LLM calls, same latency.
+
+### The answer in one go
+> "Conversational query rewriting resolves pronouns and implicit references in follow-up queries before they reach the retriever. Instead of a dedicated rewriter node, rewriting is merged into the query analyzer — one LLM call receives the raw query plus conversation history and returns both the resolved `rewrittenQuery` and the intent classification. This saves one LLM call per conversational turn. `rewrittenQuery` flows through graph state and is used by the retriever for Qdrant embedding, the generator for answer generation, and the query logger for observability."
+
+### Revision Questions
+
+- Why does Qdrant fail to retrieve relevant chunks for follow-up queries like "how does it work"?
+- Why merge rewriting into the analyzer instead of adding a separate rewriter node?
+- What does `MessagesPlaceholder("history")` inject into the prompt, and what happens when history is empty?
+- Which query does `retrieverNode` use for Qdrant embedding — `query` or `rewrittenQuery`? Why?
+- If the rewriter produces a bad standalone query, which downstream steps are affected?
+- Why is `rewrittenQuery` stored in `QueryLog` rather than just `query`?

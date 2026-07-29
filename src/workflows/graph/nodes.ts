@@ -8,20 +8,31 @@ import { evaluationPrompt } from "@/prompts/prompt";
 import { webSearchTool } from "@/tools/web-search";
 import { getRerankChunks } from "@/retrieval/reranker";
 
+// Analyzes query intent AND rewrites the query if conversation history exists.
+// Rewriting resolves references ("it", "that", follow-ups) into a standalone query.
+// reasoning is renamed to queryReasoning to avoid naming collisions in shared graph state.
+// rewrittenQuery flows through state and is used by generatorNode instead of the raw query.
 export const analyzerNode = async (state: GraphStateType) => {
-  const { query } = state;
+  const { query, history } = state;
 
-  const { strategy, reasoning } = await queryAnalyzer(query);
+  const { strategy, reasoning, rewrittenQuery } = await queryAnalyzer(
+    query,
+    history,
+  );
 
-  return { strategy, queryReasoning: reasoning };
+  return { strategy, queryReasoning: reasoning, rewrittenQuery };
 };
 
+// Routes to the correct retriever using the rewritten query (references resolved by analyzerNode).
+// Using rewrittenQuery instead of the raw query ensures Qdrant embeds the fully resolved intent —
+// "How does it compare to sessions?" → "How does JWT compare to session-based authentication?"
+// userId scopes search to this user's chunks only. documentIds scopes to the current session.
 export const retrieverNode = async (state: GraphStateType) => {
-  const { query, strategy, documentIds, userId } = state;
+  const { rewrittenQuery, strategy, documentIds, userId } = state;
 
   const retrievedChunks = await retrievalRouter(
     strategy,
-    query,
+    rewrittenQuery,
     userId,
     documentIds,
   );
@@ -29,62 +40,82 @@ export const retrieverNode = async (state: GraphStateType) => {
   return { chunks: retrievedChunks };
 };
 
+// CRAG evaluator — classifies retrieval quality into three states: correct, incorrect, ambiguous.
+// correct   → chunks directly answer the query → go to generator
+// incorrect → chunks are off-topic or query is time-sensitive → discard, web search only
+// ambiguous → chunks partially answer but are incomplete → combine with web search results
+// Temperature 0 — deterministic judgment, no creativity needed.
+// All chunks sent in one call — the evaluator asks the same question the generator will face.
+
 export const evaluatorNode = async (state: GraphStateType) => {
   const { query, chunks } = state;
 
-  const LLM = new ChatOllama({
-    model: "qwen3:4b",
-    temperature: 0,
-  });
-
+  const LLM = new ChatOllama({ model: "qwen3:4b", temperature: 0 });
   const chunksContext = chunks?.map((chunk) => chunk.content).join("\n\n");
 
   const schema = z.object({
-    relevant: z
-      .boolean()
-      .describe("Whether the retrieved chunks are relevant to the query"),
+    retrievalQuality: z.enum(["correct", "incorrect", "ambiguous"]),
+    reason: z.string(),
   });
 
   const chain = evaluationPrompt.pipe(LLM.withStructuredOutput(schema));
+  const result = await chain.invoke({ query, chunksContext });
 
-  const result = await chain.invoke({
-    query,
-    chunksContext,
-  });
-
-  return { relevant: result.relevant };
+  return {
+    retrievalQuality: result.retrievalQuality,
+    evalReason: result.reason,
+  };
 };
 
+// Generates the final answer using the LLM.
+// Receives chunks from one of three sources depending on the CRAG evaluation:
+//   correct   → reranked vector chunks only
+//   incorrect → web search chunks only
+//   ambiguous → reranked vector chunks + web search chunks combined
+// The generator doesn't know or care which source the chunks came from — same call either way.
 export const generatorNode = async (state: GraphStateType) => {
-  const { query, chunks, history } = state;
+  const { rewrittenQuery, chunks, history } = state;
 
-  const answer = await generateAnswer(query, chunks, history);
+  const answer = await generateAnswer(rewrittenQuery, chunks, history);
 
   return { answer };
 };
 
+// CRAG fallback — triggered for both "incorrect" and "ambiguous" evaluations.
+// incorrect → replaces retrieved chunks entirely with web results
+// ambiguous → combines existing reranked chunks with web results (best of both sources)
+// Web results are mapped to RetrievedChunk shape so the generator handles them identically.
+// chunkId and documentId are set to the URL — no PostgreSQL entry exists for web results.
+// score is hardcoded to 1 as a sentinel — web results have no vector similarity score.
+
 export const webSearchNode = async (state: GraphStateType) => {
-  const { query } = state;
+  const { query, chunks, retrievalQuality } = state;
 
   const webChunks = await webSearchTool.invoke({ query });
-
   const parsedChunks = JSON.parse(webChunks)?.map(
-    (chunk: { title: string; url: string; content: string }) => {
-      const { title, url, content } = chunk;
-      return {
-        chunkId: url,
-        documentId: url,
-        content,
-        chunkIndex: 0,
-        score: 1, // adding a fallback score of 1 for web search results
-        sourceType: "web" as const,
-      };
-    },
+    (chunk: { title: string; url: string; content: string }) => ({
+      chunkId: chunk.url,
+      documentId: chunk.url,
+      content: chunk.content,
+      chunkIndex: 0,
+      score: 1,
+      sourceType: "web" as const,
+    }),
   );
 
+  if (retrievalQuality === "ambiguous") {
+    // keep existing retrieved+reranked chunks, add web results
+    return { chunks: [...chunks, ...parsedChunks] };
+  }
+
+  // incorrect → discard retrieved chunks entirely, web-only
   return { chunks: parsedChunks };
 };
 
+// Re-scores the retrieved chunks using a cross-encoder model (ms-marco-MiniLM-L-6-v2).
+// Cross-encoders attend to query AND chunk together — more accurate than cosine similarity.
+// Runs after retrieverNode and before evaluatorNode so the evaluator sees the best-ranked chunks.
+// Early return on empty chunks to avoid unnecessary model calls.
 export const rerankerNode = async (state: GraphStateType) => {
   const { query, chunks } = state;
 

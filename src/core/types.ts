@@ -62,6 +62,23 @@ interface QueryIntent {
   strategy: RetrievalStrategy;
   confidence: number;
   reasoning: string;
+  rewrittenQuery: string;
+}
+
+interface QueryLog {
+  userId: string;
+  query: string;
+  rewrittenQuery?: string;
+  strategy: string;
+  retrievedChunks: number;
+  topScore: number;
+  avgScore: number;
+  rerankerTopScore?: number;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedCost: string;
+  executionTimeMs: number;
+  ragUsed: boolean;
 }
 
 export type {
@@ -75,4 +92,5 @@ export type {
   SparseVector,
   SourceType,
   QueryIntent,
+  QueryLog,
 };
