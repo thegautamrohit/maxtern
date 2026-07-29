@@ -35,3 +35,21 @@ model Chunk {
   document Document @relation(fields: [documentId], references: [id])
   createdAt DateTime @default(now())
 }
+
+model QueryLog {
+  id String @id @default(uuid())
+  userId String
+  query String
+  rewrittenQuery String?
+  strategy String
+  retrievedChunks Int
+  topScore Float
+  avgScore Float
+  rerankerTopScore Float?
+  promptTokens Int
+  completionTokens Int                 
+  estimatedCost String
+  executionTimeMs Int
+  ragUsed Boolean
+  createdAt DateTime @default(now())
+}

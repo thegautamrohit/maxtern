@@ -3,11 +3,16 @@ import { queryIntentPrompt } from "@/prompts/prompt";
 import { z } from "zod";
 import { QueryIntent } from "@/core/types";
 
+// Temperature 0 — classification is a deterministic judgment, not a creative task.
+// The same query should always produce the same strategy.
 const LLM = new ChatOllama({
   model: "qwen3:4b",
   temperature: 0,
 });
 
+// Zod schema is required (not a TypeScript type) because withStructuredOutput runs at runtime —
+// TypeScript types are erased at compile time and don't exist when the LLM response arrives.
+// z.enum enforces the allowed values at runtime — the LLM cannot return an unexpected string.
 const schema = z.object({
   strategy: z
     .enum(["semantic", "summary"])
@@ -23,6 +28,8 @@ const schema = z.object({
 export async function queryAnalyzer(query: string): Promise<QueryIntent> {
   const normalizedQuery = query.toLowerCase();
 
+  // withStructuredOutput pipes the LLM output through the Zod schema —
+  // LangChain validates and coerces the JSON response before returning it.
   const chain = queryIntentPrompt.pipe(LLM.withStructuredOutput(schema));
 
   const result = await chain.invoke({ query: normalizedQuery });

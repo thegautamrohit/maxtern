@@ -891,33 +891,38 @@ Returns `400` with a structured error message on any validation failure.
 
 ---
 
-### 9. Persistent Query Logs and Observability
+### 9. Persistent Query Logs and Observability ✅ Done
 
 **Problem:** The debug layer in V1 captures rich data — retrieval scores, token usage, latency, selected strategy — but none of it is ever stored. Across all versions, this data exists only in the API response and the frontend debug panel. There is no ability to answer: which queries are failing? What is average retrieval score over time? Which documents get queried most? Which chunks are never retrieved and may indicate chunking problems?
 
-**Fix:** Persist every query execution to a `query_logs` table.
+**Fix:** Persist every query execution to a `QueryLog` table.
 
-```typescript
+```prisma
 model QueryLog {
-  id                String   @id @default(cuid())
-  userId            String
-  query             String                          // raw user query
-  rewrittenQuery    String?                         // post-rewriter query (V3)
-  strategy          String                          // factual | summary | comparative...
-  retrievedChunks   Int
-  topScore          Float                           // highest Qdrant similarity score
-  avgScore          Float                           // average across retrieved chunks
-  rerankerTopScore  Float?                          // top cross-encoder score (V3)
-  promptTokens      Int
-  completionTokens  Int
-  estimatedCost     String
-  executionTimeMs   Int
-  ragUsed           Boolean
-  createdAt         DateTime @default(now())
+  id               String   @id @default(uuid())
+  userId           String
+  query            String
+  rewrittenQuery   String?
+  strategy         String
+  retrievedChunks  Int
+  topScore         Float
+  avgScore         Float
+  rerankerTopScore Float?
+  promptTokens     Int
+  completionTokens Int
+  estimatedCost    String
+  executionTimeMs  Int
+  ragUsed          Boolean
+  createdAt        DateTime @default(now())
 }
 ```
 
 This table powers a real feedback loop: low `avgScore` queries reveal knowledge base gaps. High `executionTimeMs` outliers identify bottlenecks. Zero-retrieval queries (`ragUsed: false`) reveal when the query analyzer is misrouting.
+
+**Implementation:**
+- `src/lib/query-logger.ts` — `logQuery(data: QueryLog)` writes the row. Wrapped in try/catch — a logging failure never breaks the query response.
+- `src/workflows/query.ts` — builds `logData` after `compiledGraph.invoke` completes. `topScore` and `avgScore` are guarded against empty chunk arrays (`ragUsed: false` path).
+- `rewrittenQuery` and `rerankerTopScore` are nullable — populated when query rewriting (#30) and reranker scores are available.
 
 **Drop-in alternative:** Langfuse or Helicone — both integrate via a single wrapper around the LLM call and capture the full trace automatically.
 

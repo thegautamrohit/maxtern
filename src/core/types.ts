@@ -64,6 +64,22 @@ interface QueryIntent {
   reasoning: string;
 }
 
+interface QueryLog {
+  userId: string;
+  query: string;
+  rewrittenQuery?: string;
+  strategy: string;
+  retrievedChunks: number;
+  topScore: number;
+  avgScore: number;
+  rerankerTopScore?: number;
+  promptTokens: number;
+  completionTokens: number;
+  estimatedCost: string;
+  executionTimeMs: number;
+  ragUsed: boolean;
+}
+
 export type {
   Document,
   Chunk,
@@ -75,4 +91,5 @@ export type {
   SparseVector,
   SourceType,
   QueryIntent,
+  QueryLog,
 };

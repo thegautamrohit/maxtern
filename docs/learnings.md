@@ -957,6 +957,70 @@ One place to change, all interfaces stay consistent. `as const` is needed when a
 
 ---
 
+## 28. Persistent Query Logs — Observability Without Noise
+
+### Why log query executions
+
+The debug panel in the frontend shows retrieval scores, chunk counts, and latency per query — but only while that response is on screen. Once the page refreshes or the session ends, that data is gone. Without persistence you cannot answer:
+
+- Which queries consistently get low retrieval scores (knowledge base gaps)?
+- Which queries trigger the CRAG web search fallback (retrieval failing)?
+- What is average latency over time (performance regressions)?
+- Which users are making the most queries (usage patterns)?
+
+Persisting to a `QueryLog` table turns ephemeral response data into a queryable history.
+
+### The never-throw pattern for logging
+
+Logging is a side effect — it must never affect the primary operation. If `logQuery` throws (e.g. Prisma connection blip), the user's query response should still be returned. The fix is to wrap the DB write in try/catch and only `console.error` on failure:
+
+```typescript
+export const logQuery = async (data: QueryLog): Promise<void> => {
+  try {
+    await prisma.queryLog.create({ data })
+  } catch (error) {
+    console.error("Error logging query:", error)
+  }
+}
+```
+
+This is a general principle: any non-critical side effect (analytics, audit logs, metrics) should be fire-and-forget. Fail silently, surface via logs, never propagate to the caller.
+
+### Guard computed fields against empty arrays
+
+`topScore` and `avgScore` are computed from the retrieved chunks array. When `ragUsed` is false (no retrieval happened), the array is empty — `.sort()[0].score` crashes with `Cannot read properties of undefined`, and `reduce() / 0` gives `NaN`.
+
+Always guard score computations behind the `isRagUsed` check:
+
+```typescript
+topScore: isRagUsed
+  ? retrievedChunks.sort((a, b) => b.score - a.score)[0].score
+  : 0,
+avgScore: isRagUsed
+  ? retrievedChunks.reduce((acc, c) => acc + c.score, 0) / retrievedChunks.length
+  : 0,
+```
+
+Zero is a valid sentinel value here — a query with no retrieval genuinely has a score of zero.
+
+### Nullable fields for future features
+
+`rewrittenQuery` and `rerankerTopScore` are `String?` and `Float?` in the schema. They're null now — `rewrittenQuery` gets populated when query rewriting (#30) is wired in, `rerankerTopScore` when reranker scores are surfaced. Designing nullable columns upfront avoids schema migrations later when those features land.
+
+### The answer in one go
+> "Query logs persist the execution trace of every query to PostgreSQL — retrieval scores, strategy, latency, token usage, ragUsed flag. The logger wraps the DB write in try/catch so a logging failure never breaks the query response. Score fields are guarded against empty chunk arrays on the no-retrieval path. Nullable columns for rewrittenQuery and rerankerTopScore are left as null stubs until those features are implemented, avoiding future migrations."
+
+### Revision Questions
+
+- Why should a logging function never throw? What is the principle behind this?
+- What happens if you compute `arr.sort()[0].score` on an empty array? How do you guard against it?
+- Why use `0` as the sentinel value for `topScore`/`avgScore` when no retrieval happened?
+- What does `ragUsed: false` in a QueryLog row tell you about the query flow?
+- Why are `rewrittenQuery` and `rerankerTopScore` nullable in the schema from the start?
+- What is the difference between `logQuery` failing silently vs the query handler failing silently? Why is one acceptable and the other not?
+
+---
+
 ## 27. Rate Limiting — Redis Sliding Window and Why In-Memory Doesn't Work
 
 ### The problem with in-memory counters
