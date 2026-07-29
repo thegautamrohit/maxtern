@@ -3,14 +3,11 @@ import { GraphStateType } from "./state";
 // CRAG routing — runs after the evaluator node.
 // If the retrieved chunks are not relevant, discard them and fall back to web search.
 // If relevant, proceed directly to generation with the vector-retrieved chunks.
+
 export const routeAfterEval = (state: GraphStateType) => {
-  const { relevant } = state;
-
-  if (!relevant) {
-    return "web_search";
-  }
-
-  return "generate";
+  const { retrievalQuality } = state;
+  if (retrievalQuality === "correct") return "generate";
+  return "web_search"; // both incorrect and ambiguous go here, node decides combine vs replace
 };
 
 // Routing after query analysis — determines whether retrieval is needed at all.

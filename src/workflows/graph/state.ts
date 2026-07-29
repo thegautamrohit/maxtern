@@ -11,10 +11,11 @@ export const GraphState = Annotation.Root({
     default: () => [],
   }),
   answer: Annotation<string>(),
-  relevant: Annotation<boolean>(),
+  retrievalQuality: Annotation<"correct" | "incorrect" | "ambiguous">(),
   history: Annotation<BaseMessage[]>(),
   documentIds: Annotation<string[]>(),
   userId: Annotation<string>(),
+  evalReason: Annotation<string>(),
 });
 
 export type GraphStateType = typeof GraphState.State;

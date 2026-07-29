@@ -17,8 +17,10 @@ import { routeAfterEval, routeAfterAnalyzer } from "./edges";
 // Full flow:
 //   START → analyzer → (retrieve | generate) via routeAfterAnalyzer
 //   retrieve → retriever → reranker → evaluator → (web_search | generate) via routeAfterEval
-//   web_search → webSearch → generator → END
-//   generate (direct) → generator → END
+//     correct   → generator → END                     (vector chunks only)
+//     incorrect → webSearch → generator → END         (web chunks replace vector chunks)
+//     ambiguous → webSearch → generator → END         (web chunks combined with vector chunks)
+//   generate (direct, no documentIds) → generator → END
 export const compiledGraph = new StateGraph(GraphState)
   .addNode("analyzer", analyzerNode)
   .addNode("retriever", retrieverNode)

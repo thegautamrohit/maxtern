@@ -35,39 +35,38 @@ export const retrieverNode = async (state: GraphStateType) => {
   return { chunks: retrievedChunks };
 };
 
-// CRAG evaluator — asks the LLM whether the retrieved chunks actually answer the query.
-// Uses structured output (Zod schema) so the LLM returns { relevant: boolean }, not free text.
-// Temperature 0 for deterministic judgment — no creativity needed for a binary classification.
-// All chunks are sent in one call because the generator also sees all chunks together —
-// the evaluator asks the same question the generator will face.
+// CRAG evaluator — classifies retrieval quality into three states: correct, incorrect, ambiguous.
+// correct   → chunks directly answer the query → go to generator
+// incorrect → chunks are off-topic or query is time-sensitive → discard, web search only
+// ambiguous → chunks partially answer but are incomplete → combine with web search results
+// Temperature 0 — deterministic judgment, no creativity needed.
+// All chunks sent in one call — the evaluator asks the same question the generator will face.
+
 export const evaluatorNode = async (state: GraphStateType) => {
   const { query, chunks } = state;
 
-  const LLM = new ChatOllama({
-    model: "qwen3:4b",
-    temperature: 0,
-  });
-
+  const LLM = new ChatOllama({ model: "qwen3:4b", temperature: 0 });
   const chunksContext = chunks?.map((chunk) => chunk.content).join("\n\n");
 
   const schema = z.object({
-    relevant: z
-      .boolean()
-      .describe("Whether the retrieved chunks are relevant to the query"),
+    retrievalQuality: z.enum(["correct", "incorrect", "ambiguous"]),
+    reason: z.string(),
   });
 
   const chain = evaluationPrompt.pipe(LLM.withStructuredOutput(schema));
+  const result = await chain.invoke({ query, chunksContext });
 
-  const result = await chain.invoke({
-    query,
-    chunksContext,
-  });
-
-  return { relevant: result.relevant };
+  return {
+    retrievalQuality: result.retrievalQuality,
+    evalReason: result.reason,
+  };
 };
 
 // Generates the final answer using the LLM.
-// Receives either vector-retrieved chunks (relevant path) or web search chunks (fallback path).
+// Receives chunks from one of three sources depending on the CRAG evaluation:
+//   correct   → reranked vector chunks only
+//   incorrect → web search chunks only
+//   ambiguous → reranked vector chunks + web search chunks combined
 // The generator doesn't know or care which source the chunks came from — same call either way.
 export const generatorNode = async (state: GraphStateType) => {
   const { query, chunks, history } = state;
@@ -77,30 +76,34 @@ export const generatorNode = async (state: GraphStateType) => {
   return { answer };
 };
 
-// CRAG fallback — triggered when the evaluator marks retrieved chunks as not relevant.
-// Calls the Serper web search tool, parses the JSON string result, and maps each result
-// to a RetrievedChunk shape so the generator can consume it identically to vector chunks.
+// CRAG fallback — triggered for both "incorrect" and "ambiguous" evaluations.
+// incorrect → replaces retrieved chunks entirely with web results
+// ambiguous → combines existing reranked chunks with web results (best of both sources)
+// Web results are mapped to RetrievedChunk shape so the generator handles them identically.
 // chunkId and documentId are set to the URL — no PostgreSQL entry exists for web results.
 // score is hardcoded to 1 as a sentinel — web results have no vector similarity score.
+
 export const webSearchNode = async (state: GraphStateType) => {
-  const { query } = state;
+  const { query, chunks, retrievalQuality } = state;
 
   const webChunks = await webSearchTool.invoke({ query });
-
   const parsedChunks = JSON.parse(webChunks)?.map(
-    (chunk: { title: string; url: string; content: string }) => {
-      const { title, url, content } = chunk;
-      return {
-        chunkId: url,
-        documentId: url,
-        content,
-        chunkIndex: 0,
-        score: 1,
-        sourceType: "web" as const,
-      };
-    },
+    (chunk: { title: string; url: string; content: string }) => ({
+      chunkId: chunk.url,
+      documentId: chunk.url,
+      content: chunk.content,
+      chunkIndex: 0,
+      score: 1,
+      sourceType: "web" as const,
+    }),
   );
 
+  if (retrievalQuality === "ambiguous") {
+    // keep existing retrieved+reranked chunks, add web results
+    return { chunks: [...chunks, ...parsedChunks] };
+  }
+
+  // incorrect → discard retrieved chunks entirely, web-only
   return { chunks: parsedChunks };
 };
 
