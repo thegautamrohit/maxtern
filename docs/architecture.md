@@ -35,6 +35,8 @@ The core principle: **every query is analyzed before retrieval happens**. The sy
 | Relational DB | PostgreSQL via Prisma 6 + PrismaPg adapter |
 | Embeddings | Ollama (nomic-embed-text) → OpenAI in production |
 | LLM | OpenAI / Anthropic / Gemini |
+| Auth | Clerk v7 (`@clerk/nextjs@^7`) |
+| Rate Limiting | Upstash Redis + `@upstash/ratelimit` (sliding window) |
 | Infra | Docker Compose (local) |
 
 ---

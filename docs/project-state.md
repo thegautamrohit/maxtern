@@ -156,6 +156,7 @@ src/
   lib/
     utils.ts                        ✅ Done (Tailwind cn helper)
     ingest-validation.ts            ✅ Done (V3 — URL validation + SSRF protection)
+    rate-limit.ts                   ✅ Done (V3 — Redis sliding window, per-user, query + ingest limits)
   observability/                    ⏸ Deferred to V3
 
 app/
@@ -479,7 +480,7 @@ Output: { "answer": "...", "debug": {} }
 | 26 | Transactional Ingestion (`vectorized` flag + rollback) | ✅ Done |
 | 27 | Authentication — Option A (Clerk gate) | ✅ Done |
 | 28 | Authentication — Option B (per-user document isolation) | ✅ Done |
-| 29 | Rate Limiting (Redis sliding window) | 🔴 Pending |
+| 29 | Rate Limiting (Redis sliding window) | ✅ Done |
 | 30 | Conversational Query Rewriting | 🔴 Pending |
 | 31 | Ingestion Input Validation + SSRF protection | ✅ Done |
 | 32 | Persistent Query Logs (`query_logs` table) | 🔴 Pending |

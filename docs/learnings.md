@@ -957,6 +957,80 @@ One place to change, all interfaces stay consistent. `as const` is needed when a
 
 ---
 
+## 27. Rate Limiting — Redis Sliding Window and Why In-Memory Doesn't Work
+
+### The problem with in-memory counters
+
+Next.js runs on multiple server instances in production (Vercel, AWS, etc. load balance across workers). Each instance has its own memory — they do not share state. If each instance tracks its own counter, a user can hit instance A 30 times and instance B 30 times — each instance thinks the limit hasn't been reached, the user effectively has no limit.
+
+Rate limiting state must live outside the process, in a shared store all instances can read and write. That's Redis.
+
+### The sliding window algorithm
+
+Three algorithms exist for rate limiting:
+
+**Fixed window:** Divide time into fixed slots (e.g., every 60s). Count requests per slot. Problem: a user can fire 30 requests at second 59 and 30 more at second 61 — 60 requests in 2 seconds, both windows allow it.
+
+**Token bucket:** Each user has a bucket of tokens, refilled at a constant rate. Allows controlled bursting. Complex to implement correctly in a distributed system.
+
+**Sliding window:** The window follows the current time. At any moment, look back exactly N seconds and count. No boundary exploit. This is what `@upstash/ratelimit` implements.
+
+### How Redis implements sliding window — sorted sets
+
+Redis stores each user's request history in a **sorted set** — a data structure where every item (member) has a numeric score. For rate limiting:
+
+- **Key** = `ratelimit:query:userId` — one sorted set per user per endpoint
+- **Member** = unique request ID (random string)
+- **Score** = Unix timestamp in milliseconds when that request happened
+
+On every request, three operations happen atomically:
+
+1. **Remove expired entries** — delete all members with score < `(now - windowMs)`. These are outside the window.
+2. **Add new request** — insert a new member with score = current timestamp.
+3. **Count** — `ZCOUNT key min max` counts all members in the window. If count > limit → 429.
+
+The count is never stored explicitly — it's always derived from how many members currently exist in the window. The sorted set is a log of timestamps, not a counter.
+
+### Why one sorted set per user per endpoint
+
+Two routes have different limits — query (30/min) and ingest (5/5min). Using a separate key prefix per endpoint (`ratelimit:query:userId` vs `ratelimit:ingest:userId`) means each endpoint tracks independently. Two different users also get completely separate sorted sets — User A's count never affects User B's.
+
+The key encodes identity. The sorted set contents encode history.
+
+### Retry-After header — operator precedence matters
+
+When returning 429, include a `Retry-After` header telling the client how many seconds to wait:
+
+```typescript
+// WRONG — divides only Date.now(), then subtracts
+Math.ceil(reset - Date.now() / 1000)
+
+// CORRECT — converts both to seconds first, then subtracts
+Math.ceil((reset - Date.now()) / 1000)
+```
+
+`reset` is a Unix timestamp in milliseconds. `Date.now()` is also in milliseconds. Dividing by 1000 converts the difference to seconds. Missing the parentheses means you're subtracting milliseconds from milliseconds-then-divided-by-1000 — mixing units, wrong result.
+
+### Upstash — why not self-hosted Redis
+
+Next.js serverless functions (Vercel, etc.) cannot maintain persistent TCP connections — they are stateless, short-lived processes. Traditional Redis clients use persistent TCP sockets. Upstash provides an HTTP-based Redis API that works in serverless environments. `@upstash/redis` communicates via REST instead of TCP — each call is a stateless HTTP request. Functionally identical to Redis from the application's perspective.
+
+### The answer in one go
+> "Rate limiting state must be shared across all server instances — in-memory counters break under load balancing. Redis sliding window stores each user's request timestamps in a sorted set keyed by userId and endpoint. On every request: remove expired entries, add current timestamp, count what's left. If count exceeds the limit, return 429 with a Retry-After header computed as `Math.ceil((reset - Date.now()) / 1000)`. Upstash Redis is used instead of self-hosted Redis because serverless environments cannot maintain persistent TCP connections — Upstash provides an HTTP-based API. Separate sorted set keys per endpoint and per userId ensure each limit operates independently."
+
+### Revision Questions
+
+- Why does in-memory rate limiting break under horizontal scaling?
+- What is the difference between fixed window and sliding window rate limiting? What attack does sliding window prevent?
+- How does Redis implement a sliding window — what data structure and what three operations?
+- Why is the count derived from the sorted set rather than stored explicitly?
+- Why is `ratelimit:query:userId` a separate key from `ratelimit:ingest:userId`?
+- What is the operator precedence bug in `Math.ceil(reset - Date.now() / 1000)` and how do you fix it?
+- Why does Upstash exist and why can't you use a standard Redis client in a serverless Next.js function?
+- What should a 429 response include beyond the status code?
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture
