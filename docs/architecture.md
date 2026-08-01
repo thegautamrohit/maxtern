@@ -918,30 +918,32 @@ This table powers a real feedback loop: low `avgScore` queries reveal knowledge 
 
 ---
 
-### 10. Error Handling Strategy
+### 10. Error Handling Strategy ✅ Done
 
 **Problem:** The architecture describes happy-path flows only across all versions. No version defines what happens when Qdrant is unavailable, the LLM provider rate-limits, or PostgreSQL times out mid-ingestion. In production, these failures happen regularly.
 
-**Fix:** Typed errors, exponential backoff, and graceful degradation per external dependency.
+**Fix:** Typed errors, exponential backoff with jitter, and circuit breaker per external dependency.
 
-**LLM provider (rate limits):**
+**Typed errors — `src/lib/error.ts`:**
 ```typescript
-// Exponential backoff with jitter on 429 responses
-// Max 3 retries before returning a structured error to the client
+export class LLMError extends Error { ... }
+export class LLMRateLimitError extends Error { ... }
+export class QdrantError extends Error { ... }
+export class IngestionError extends Error { ... }
 ```
+Each sets `this.name` for readable stack traces. Typed errors allow `instanceof` checks without parsing message strings.
 
-**Qdrant (availability):**
-```typescript
-// Circuit breaker — after 3 consecutive failures, open the circuit for 30s
-// During open circuit: return a degraded response explaining retrieval is unavailable
-// Do not hallucinate an answer when retrieval fails — surface the failure explicitly
-```
+**Exponential backoff with jitter — `src/lib/backoff.ts`:**
+- `withBackoff<T>(fn, maxRetries = 3)` wraps any async call
+- Retries on `LLMError` and `QdrantError` — rethrows all other errors immediately
+- Delay: `random(0, BASE_DELAY * 2^attempt)` — jitter prevents thundering herd
+- Wired into: `src/llm/llm.ts` (both `chain.invoke` calls), `src/retrieval/query-analyzer.ts`
+- LLM errors are mapped to `LLMError` at the boundary — provider-agnostic, works with Ollama → OpenAI switch
 
-**PostgreSQL (timeouts):**
-```typescript
-// Query timeout: 5s for reads, 30s for ingestion writes
-// On timeout: surface error, do not leave ingestion in a partial state
-// Relies on the vectorized flag from Fix 4 to detect and recover partial ingestions
-```
+**Circuit breaker — `src/lib/circuit-breaker.ts`:**
+- `CircuitBreaker({ failureThreshold, cooldownMs })` — CLOSED → OPEN → HALF_OPEN state machine
+- Wired into: `src/retrieval/retrievers/semantic-retriever.ts` (`failureThreshold: 5, cooldownMs: 30000`)
+- Both Qdrant searches wrapped in a single `execute()` — one logical operation, one failure count
+- **Singleton at module level** — failure state must survive across requests. Creating inside the function resets state on every call.
 
-**Principle:** When retrieval fails, tell the user. Never silently fall back to an LLM answer with no retrieval context — that is hallucination by default, which is the exact problem RAG exists to prevent.
+**Principle:** When retrieval fails, surface the failure explicitly. Never silently fall back to an LLM answer with no retrieval context — that is hallucination by default, which is the exact problem RAG exists to prevent.

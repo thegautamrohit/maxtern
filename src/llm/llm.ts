@@ -3,6 +3,8 @@ import { RetrievedChunk } from "@/core/types";
 import { qaPrompt, generalPrompt } from "@/prompts/prompt";
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { BaseMessage } from "@langchain/core/messages";
+import { withBackoff } from "@/lib/backoff";
+import { LLMError } from "@/lib/error";
 
 export async function generateAnswer(
   query: string,
@@ -20,14 +22,31 @@ export async function generateAnswer(
 
   if (chunks && chunks?.length === 0) {
     const chain = generalPrompt.pipe(LLM).pipe(parser);
-    return chain.invoke({ userQuery: query, history });
+
+    return withBackoff(async () => {
+      try {
+        return await chain.invoke({ userQuery: query, history });
+      } catch (error) {
+        throw new LLMError(
+          error instanceof Error ? error.message : "LLM call failed",
+        );
+      }
+    });
   }
 
   const chain = qaPrompt.pipe(LLM).pipe(parser);
 
-  return chain.invoke({
-    userQuery: query,
-    context: chunks?.map((chunk) => chunk.content).join("\n"),
-    history,
+  return withBackoff(async () => {
+    try {
+      return await chain.invoke({
+        userQuery: query,
+        context: chunks?.map((chunk) => chunk.content).join("\n"),
+        history,
+      });
+    } catch (error) {
+      throw new LLMError(
+        error instanceof Error ? error.message : "LLM call failed",
+      );
+    }
   });
 }

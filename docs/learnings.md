@@ -1095,6 +1095,90 @@ Next.js serverless functions (Vercel, etc.) cannot maintain persistent TCP conne
 
 ---
 
+## 30. Error Handling — Typed Errors, Exponential Backoff, Circuit Breaker
+
+### Why typed errors, not just `new Error("...")`
+
+Generic `Error` objects force callers to parse the message string to understand what happened. You end up with `if (error.message.includes("rate limit"))` — fragile and not type-safe.
+
+Custom error classes give you `instanceof` checks:
+
+```typescript
+export class LLMError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LLMError";
+  }
+}
+```
+
+`this.name = "LLMError"` is important — without it, `.name` would show `"Error"`, not `"LLMError"`, even though `instanceof LLMError` would still work. Setting `.name` ensures stack traces and logs are readable.
+
+Typed errors let utilities like `withBackoff` make decisions without parsing strings:
+```typescript
+function isRetryable(error: unknown): boolean {
+  return error instanceof LLMError || error instanceof QdrantError;
+}
+```
+
+### Exponential backoff with jitter
+
+Backoff means waiting before retrying a failed call. **Exponential** means each retry waits longer: `delay = BASE * 2^attempt` (500ms, 1000ms, 2000ms, ...).
+
+**Thundering herd problem:** If 100 clients all fail at the same time and all retry at identical fixed intervals, they all hammer the server together again — the server never gets breathing room. The fix is **jitter** — randomize the delay within the exponential range:
+
+```typescript
+function jitteredDelay(attempt: number): number {
+  const max = BASE_DELAY_MS * Math.pow(2, attempt);
+  return Math.random() * max;  // random between 0 and max
+}
+```
+
+Now each client retries at a different time — traffic spreads out and the server can recover.
+
+Key implementation detail: only sleep if `attempt < maxRetries` — no point sleeping after the last failure. Only retry on typed errors that are known to be transient (`LLMError`, `QdrantError`) — rethrow everything else immediately.
+
+### Circuit breaker — CLOSED / OPEN / HALF_OPEN
+
+Backoff retries on failure, but it still tries every request. If Qdrant is completely down, every query still spends seconds retrying before giving up. Under load, this means your app wastes time hammering a dead service.
+
+The circuit breaker tracks failure state and short-circuits calls when the service is clearly unhealthy:
+
+```
+CLOSED → normal, requests go through
+  ↓ (failureThreshold consecutive failures)
+OPEN → reject immediately, no network call
+  ↓ (after cooldownMs)
+HALF_OPEN → trial: allow one request through
+  ↓ success        ↓ failure
+CLOSED             OPEN (restart cooldown)
+```
+
+Key implementation decisions:
+- **Singleton at module level** — if created inside the function, it resets on every call and never accumulates failures. The failure state must survive across requests.
+- **Both Qdrant searches in one `execute()` call** — they're one logical operation. One Qdrant failure = one failure count.
+- **Errors mapped to typed errors before execute** — the circuit breaker works with errors thrown from inside its callback. Unmapped errors would propagate but not count toward the failure threshold.
+
+### YAGNI — You Ain't Gonna Need It
+
+Don't add configurability or abstractions until something actually needs them. `BASE_DELAY_MS` is hardcoded because nothing needs to change it. If that need arises, changing one constant takes 30 seconds. Designing for hypothetical future flexibility upfront is speculative work that adds surface area for no current benefit.
+
+### The answer in one go
+> "Typed error classes give `instanceof` checks to utilities like `withBackoff` without parsing message strings. `this.name` must be set in the constructor for readable logs. Exponential backoff with jitter prevents the thundering herd problem — clients retry at randomized times instead of simultaneously. The circuit breaker goes further: after `failureThreshold` consecutive failures, it opens and rejects immediately without calling the service. After `cooldownMs`, it enters HALF_OPEN and allows one trial request. The circuit breaker must be a singleton at module level — creating it inside the function resets failure state on every call. Both Qdrant searches are wrapped in a single `execute()` call because they are one logical operation."
+
+### Revision Questions
+
+- Why does `this.name = "LLMError"` matter in a custom error class? What breaks if you skip it?
+- What is the thundering herd problem and how does jitter solve it?
+- Why is pure exponential backoff (no jitter) insufficient when many clients fail simultaneously?
+- What is the difference between backoff and a circuit breaker? When would you use each?
+- Why must the `CircuitBreaker` be instantiated at module level, not inside the function it protects?
+- What happens in HALF_OPEN state? What transitions to CLOSED vs back to OPEN?
+- Why are both Qdrant searches wrapped in a single `execute()` call instead of two separate ones?
+- Why are LLM errors mapped to `LLMError` in `llm.ts` rather than checking for Ollama-specific error strings?
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture

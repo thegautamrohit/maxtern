@@ -3,6 +3,8 @@ import { queryIntentPrompt } from "@/prompts/prompt";
 import { z } from "zod";
 import { QueryIntent } from "@/core/types";
 import { BaseMessage } from "@langchain/core/messages";
+import { withBackoff } from "@/lib/backoff";
+import { LLMError } from "@/lib/error";
 
 // Temperature 0 — classification is a deterministic judgment, not a creative task.
 // The same query should always produce the same strategy.
@@ -37,7 +39,13 @@ export async function queryAnalyzer(
   // LangChain validates and coerces the JSON response before returning it.
   const chain = queryIntentPrompt.pipe(LLM.withStructuredOutput(schema));
 
-  const result = await chain.invoke({ query: normalizedQuery, history });
-
-  return result;
+  return withBackoff(async () => {
+    try {
+      return await chain.invoke({ query: normalizedQuery, history });
+    } catch (error) {
+      throw new LLMError(
+        error instanceof Error ? error.message : "LLM call failed",
+      );
+    }
+  });
 }

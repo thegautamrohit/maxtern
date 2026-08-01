@@ -3,6 +3,14 @@ import prisma from "@/db/client";
 import { RetrievedChunk, SourceType } from "@/core/types";
 import { embedText } from "@/embeddings/embedder";
 import { computeSparseVector } from "@/embeddings/sparse-embedder";
+import { CircuitBreaker } from "@/lib/circuit-breaker";
+import { QdrantError } from "@/lib/error";
+
+// Singleton — must live at module level so failure state persists across requests.
+// If created inside the function, it resets on every call and never opens.
+// failureThreshold: 5 consecutive failures → open the breaker.
+// cooldownMs: 30s before allowing a trial request through (HALF_OPEN).
+const qdrantBreaker = new CircuitBreaker({ failureThreshold: 5, cooldownMs: 30000 });
 
 async function semanticRetrieval(
   query: string,
@@ -31,16 +39,28 @@ async function semanticRetrieval(
   // Two separate Qdrant searches — one per named vector.
   // Qdrant does not merge or RRF automatically when using the JS client's search() method.
   // limit: 20 for recall — we want the right chunk somewhere in the top-20, reranker handles precision.
-  const denseResults = await qdrant.search("chunks", {
-    vector: { name: "dense", vector: queryDenseVector },
-    limit: 20,
-    filter,
-  });
+  // Both searches are wrapped in a single circuit breaker execute — they're one logical operation.
+  // If Qdrant is down, the breaker opens after 5 failures and rejects immediately for 30s.
+  const { denseResults, sparseResults } = await qdrantBreaker.execute(async () => {
+    try {
+      const denseResults = await qdrant.search("chunks", {
+        vector: { name: "dense", vector: queryDenseVector },
+        limit: 20,
+        filter,
+      });
 
-  const sparseResults = await qdrant.search("chunks", {
-    vector: { name: "sparse", vector: querySparseVector },
-    limit: 20,
-    filter,
+      const sparseResults = await qdrant.search("chunks", {
+        vector: { name: "sparse", vector: querySparseVector },
+        limit: 20,
+        filter,
+      });
+
+      return { denseResults, sparseResults };
+    } catch (error) {
+      throw new QdrantError(
+        error instanceof Error ? error.message : "Qdrant search failed",
+      );
+    }
   });
 
   // RRF (Reciprocal Rank Fusion) — merges dense and sparse ranked lists.

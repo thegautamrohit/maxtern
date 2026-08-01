@@ -158,6 +158,9 @@ src/
     ingest-validation.ts            ✅ Done (V3 — URL validation + SSRF protection)
     rate-limit.ts                   ✅ Done (V3 — Redis sliding window, per-user, query + ingest limits)
     query-logger.ts                 ✅ Done (V3 — writes QueryLog row after every query execution)
+    error.ts                        ✅ Done (V3 — typed error classes: LLMError, LLMRateLimitError, QdrantError, IngestionError)
+    backoff.ts                      ✅ Done (V3 — withBackoff<T> — exponential backoff with jitter, retries on typed errors)
+    circuit-breaker.ts              ✅ Done (V3 — CircuitBreaker — CLOSED/OPEN/HALF_OPEN state machine, singleton per dependency)
   observability/                    ⏸ Deferred to V3
 
 app/
@@ -341,6 +344,8 @@ Key details:
 - `embedText(query)` → 768-dim dense vector
 - `computeSparseVector(query)` → BM25 sparse vector `{ indices, values }`
 - Both searches run against named vectors: `{ name: "dense", vector: ... }` and `{ name: "sparse", vector: ... }`, `limit: 20` each, filtered by `documentIds`
+- Both Qdrant searches wrapped in a **singleton `CircuitBreaker`** (`failureThreshold: 5, cooldownMs: 30000`). Singleton lives at module level — resets on every call would defeat the purpose.
+- Qdrant errors mapped to `QdrantError` so the circuit breaker can identify and count them
 - RRF merge: `score += 1 / (K + rank + 1)` where K=60 — accumulates across both result lists
 - Top-5 chunk IDs by RRF score → `prisma.chunk.findMany`
 - sourceType map built from both dense + sparse results (covers sparse-only results)
@@ -358,7 +363,7 @@ Same flow as semantic retriever — `limit: 20` instead of 5. Kept as a separate
 
 ### `src/retrieval/query-analyzer.ts`
 
-LLM-based intent classifier (V3 — replaced rule-based keyword matching). Uses `ChatOllama` (`qwen3:4b`, temperature 0) with `withStructuredOutput` and a Zod schema. Returns `QueryIntent: { strategy, confidence, reasoning }`. The `reasoning` field flows into the debug panel as `retrievalReason`, replacing hardcoded strings.
+LLM-based intent classifier (V3 — replaced rule-based keyword matching). Uses `ChatOllama` (`qwen3:4b`, temperature 0) with `withStructuredOutput` and a Zod schema. Returns `QueryIntent: { strategy, confidence, reasoning, rewrittenQuery }`. The `reasoning` field flows into the debug panel as `retrievalReason`, replacing hardcoded strings. `chain.invoke` is wrapped with `withBackoff` — errors mapped to `LLMError` for retryable failures.
 
 ---
 
@@ -382,7 +387,7 @@ Cross-encoder reranker (V3). Uses `Xenova/ms-marco-MiniLM-L-6-v2` via `@xenova/t
 
 ### `src/llm/llm.ts`
 
-`generateAnswer(query, chunks)` — builds context string from chunk contents, pipes `qaPrompt | ChatOllama("llama3") | StringOutputParser` via LCEL chain, returns answer as `Promise<string>`.
+`generateAnswer(query, chunks, history?)` — builds context string from chunk contents, pipes `qaPrompt | ChatOllama | StringOutputParser` via LCEL chain, returns answer as `Promise<string>`. Both `chain.invoke` calls (QA path and general path) are wrapped with `withBackoff` — LLM errors mapped to `LLMError` before retrying. Backoff is provider-agnostic — works when switching from Ollama to OpenAI/Anthropic.
 
 ---
 
@@ -485,7 +490,7 @@ Output: { "answer": "...", "debug": {} }
 | 30 | Conversational Query Rewriting | ✅ Done |
 | 31 | Ingestion Input Validation + SSRF protection | ✅ Done |
 | 32 | Persistent Query Logs (`query_logs` table) | ✅ Done |
-| 33 | Error Handling — typed errors, backoff, circuit breaker | 🔴 Pending |
+| 33 | Error Handling — typed errors, backoff, circuit breaker | ✅ Done |
 | 34 | Observability Layer (debug storage + dashboards) | 🔴 Pending |
 
 ### V4 — Agentic Capabilities
