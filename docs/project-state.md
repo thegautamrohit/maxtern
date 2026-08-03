@@ -161,7 +161,8 @@ src/
     error.ts                        ✅ Done (V3 — typed error classes: LLMError, LLMRateLimitError, QdrantError, IngestionError)
     backoff.ts                      ✅ Done (V3 — withBackoff<T> — exponential backoff with jitter, retries on typed errors)
     circuit-breaker.ts              ✅ Done (V3 — CircuitBreaker — CLOSED/OPEN/HALF_OPEN state machine, singleton per dependency)
-  observability/                    ⏸ Deferred to V3
+  observability/
+    analytics.ts                    ✅ Done (V3 — Prisma queries: getQueryVolume, getStrategyDistribution, getRetrievalStats, getCragFallbackRate, getRecentLogs, getTokenUsageStats)
 
 app/
   (auth)/
@@ -176,7 +177,12 @@ app/
       route.ts                      ✅ Done
     query/
       route.ts                      ✅ Done
+    admin/
+      logs/
+        route.ts                    ✅ Done (V3 — GET endpoint, returns all analytics in one call)
     documents/                      🔴 Not started
+  dashboard/
+    page.tsx                        ✅ Done (V3 — server component, stat cards + bar charts + recent logs table)
 ```
 
 ---
@@ -413,21 +419,39 @@ SSRF protection covers: `127.x`, `10.x`, `192.168.x`, `172.16–31.x`, `localhos
 
 ---
 
-## Pending Components
+### `src/observability/analytics.ts`
 
-### `src/observability/` — Debug Layer
+Six Prisma query functions that compute metrics from the `QueryLog` table:
 
-Every query response includes:
-```json
-{
-  "selectedRetriever": "semantic",
-  "retrievalReason": ["precise question detected"],
-  "retrievedChunks": 5,
-  "executionTime": 1200
-}
-```
+- **`getQueryVolume(days)`** — `findMany` with `createdAt >= N days ago`, grouped by `YYYY-MM-DD` in JS
+- **`getStrategyDistribution()`** — `groupBy("strategy")` with `_count` — semantic vs summary breakdown
+- **`getRetrievalStats()`** — `aggregate` with `_avg` (score, latency), `_max` (topScore), `_count`
+- **`getCragFallbackRate()`** — two `aggregate` calls (total vs `ragUsed: false`), returns rate as 0–1
+- **`getRecentLogs()`** — `findMany` ordered by `createdAt desc`, `take: 20`
+- **`getTokenUsageStats()`** — `aggregate` with `_sum` and `_avg` on prompt/completion token fields
 
 ---
+
+### `app/api/admin/logs/route.ts`
+
+`GET` handler. Auth-gated via Clerk. Calls all six analytics functions with `Promise.all` — parallel Prisma queries, one combined JSON response.
+
+---
+
+### `app/dashboard/page.tsx`
+
+Server component — imports analytics functions directly, no client-side fetch needed. Renders:
+- 4 stat cards: total queries, avg score, CRAG fallback rate, avg latency
+- Queries per day — CSS bar chart (no library), width driven by `(count / max) * 100%`
+- Strategy distribution — same CSS bar pattern
+- Token usage stats — sum and avg per query
+- Recent queries table — query, strategy, score, latency, ragUsed badge, timestamp
+
+Dashboard link added to sidebar footer via `LayoutDashboard` icon (`lucide-react`) + `next/link`.
+
+---
+
+## Pending Components
 
 ### API Routes
 
@@ -491,7 +515,7 @@ Output: { "answer": "...", "debug": {} }
 | 31 | Ingestion Input Validation + SSRF protection | ✅ Done |
 | 32 | Persistent Query Logs (`query_logs` table) | ✅ Done |
 | 33 | Error Handling — typed errors, backoff, circuit breaker | ✅ Done |
-| 34 | Observability Layer (debug storage + dashboards) | 🔴 Pending |
+| 34 | Observability Layer (debug storage + dashboards) | ✅ Done |
 
 ### V4 — Agentic Capabilities
 | # | Component | Status |

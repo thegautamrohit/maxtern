@@ -1179,6 +1179,99 @@ Don't add configurability or abstractions until something actually needs them. `
 
 ---
 
+## 31. Prisma Aggregations — `aggregate`, `groupBy`, `findMany`
+
+### Three methods, three purposes
+
+**`findMany`** — fetch rows. Returns an array of records matching your filter.
+```typescript
+prisma.queryLog.findMany({
+  where: { ragUsed: false },
+  orderBy: { createdAt: "desc" },
+  take: 20,
+  select: { query: true, createdAt: true },  // only fetch needed columns
+})
+```
+
+**`aggregate`** — compute one value across all matching rows. Equivalent to SQL `SELECT AVG(...), COUNT(...), MAX(...)`.
+```typescript
+prisma.queryLog.aggregate({
+  _avg: { avgScore: true, executionTimeMs: true },
+  _max: { topScore: true },
+  _sum: { promptTokens: true },
+  _count: { id: true },
+  where: { ragUsed: true },  // optional filter
+})
+// returns: { _avg: { avgScore: 0.72, ... }, _count: { id: 143 }, ... }
+```
+
+**`groupBy`** — aggregate per category. Equivalent to SQL `SELECT strategy, COUNT(*) GROUP BY strategy`.
+```typescript
+prisma.queryLog.groupBy({
+  by: ["strategy"],
+  _count: { id: true },
+})
+// returns: [{ strategy: "semantic", _count: { id: 87 } }, ...]
+```
+
+### Why server components beat client-side fetch for dashboards
+
+A Next.js server component runs on the server before sending HTML to the browser. It can import Prisma and query the database directly — no API route needed, no `useEffect`, no loading state.
+
+```typescript
+// Server component — runs on server, has access to Prisma
+export default async function DashboardPage() {
+  const logs = await prisma.queryLog.findMany(...)  // direct DB call
+  return <div>{logs.map(...)}</div>
+}
+```
+
+A client component (`"use client"`) cannot import Prisma — it runs in the browser where there is no database connection. It must fetch via an API route instead.
+
+**Rule:** If a page only needs to display data (no interactivity), make it a server component. You skip the API layer entirely.
+
+### CSS bar charts — no library needed
+
+A bar chart is just a `div` whose width represents a proportion:
+
+```typescript
+const max = Math.max(...Object.values(data), 1);  // at least 1 — avoid division by zero
+
+<div style={{ width: `${(value / max) * 100}%` }} className="h-5 bg-blue-500 rounded" />
+```
+
+`Math.max(...values, 1)` — the `, 1` is a guard. If `values` is empty, `Math.max()` returns `-Infinity`. With `, 1`, the minimum is always 1, so no bar renders as `NaN%` wide.
+
+### `Promise.all` for independent DB queries
+
+Six analytics functions, all independent. Sequential calls would wait for each one to finish before starting the next. `Promise.all` fires all six simultaneously:
+
+```typescript
+const [volume, strategy, retrieval, crag, logs, tokens] = await Promise.all([
+  getQueryVolume(),
+  getStrategyDistribution(),
+  getRetrievalStats(),
+  getCragFallbackRate(),
+  getRecentLogs(),
+  getTokenUsageStats(),
+]);
+```
+
+Destructuring directly from `Promise.all` — the array order matches the function order. Clean and readable.
+
+### The answer in one go
+> "Prisma's `findMany` fetches rows, `aggregate` computes values across rows (avg, sum, count, max), and `groupBy` aggregates per category. Server components can import Prisma directly — no API route or `useEffect` needed. CSS bar charts need no library: width is `(value / max) * 100%`, with `Math.max(...values, 1)` guarding against division by zero on empty data. Independent analytics queries run in parallel via `Promise.all`."
+
+### Revision Questions
+
+- What is the difference between `aggregate` and `groupBy`? Give a concrete example where each is the right choice.
+- Why can a server component import Prisma directly but a client component cannot?
+- What does `Math.max(...values, 1)` protect against in a bar chart? What happens without the `, 1`?
+- Why use `Promise.all` for the six analytics functions instead of `await`-ing each one?
+- When would you use `select` inside `findMany`? What is the performance benefit?
+
+---
+
 ## Revision Questions
 
 ### RAG Architecture

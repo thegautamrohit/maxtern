@@ -333,51 +333,47 @@ This isolates each user's retrieval without separate collections.
 
 ---
 
-# Observability Layer
+# Observability Layer ✅ Done (V3)
 
-First-class feature. Every query execution must be explainable.
+Two-layer observability: per-response debug info surfaced in the frontend, and persistent query analytics stored in PostgreSQL and exposed via a dashboard.
 
-## Debug Response Shape
+## Per-Response Debug (Frontend)
 
-Attached to every assistant message in the API response.
+Every assistant message has a collapsible debug panel showing the full retrieval trace for that query.
 
 ```typescript
 type DebugInfo = {
   selectedRetriever: "semantic" | "summary"
-  retrievalReason: string[]        // why this retriever was chosen
+  retrievalReason: string          // LLM reasoning from queryAnalyzer
   retrievedChunks: number          // how many chunks were fetched
   executionTime: number            // total ms for the query pipeline
   chunks: RetrievedChunkDebug[]    // each chunk ranked by score
   tokens: TokenUsage               // LLM token + cost breakdown
 }
-
-type RetrievedChunkDebug = {
-  chunkId: string
-  documentId: string
-  sourceType: "pdf" | "website" | "github"
-  sourceTitle: string              // document title from PostgreSQL
-  chunkIndex: number               // position within the document
-  score: number                    // Qdrant similarity score (0–1)
-  contentPreview: string           // first ~150 chars of chunk content
-}
-
-type TokenUsage = {
-  promptTokens: number             // tokens sent to LLM (context + query)
-  completionTokens: number         // tokens in the LLM response
-  totalTokens: number
-  estimatedCost: string            // e.g. "$0.0012"
-  ragUsed: boolean                 // false if no retrieval happened
-}
 ```
 
-## Frontend Debug UI
+Components: `DebugSummaryBar`, `RetrieverBadge`, `ChunkList` → `ChunkCard`, `TokenUsage`.
 
-Every assistant message has a collapsible debug panel:
+## Persistent Query Analytics (Dashboard)
 
-- `DebugSummaryBar` — one-line: retriever used, chunk count, latency, token cost
-- `RetrieverBadge` — pill: "semantic" or "summary" + reason
-- `ChunkList` → `ChunkCard` — each retrieved chunk: score, source title, chunkIndex, content preview
-- `TokenUsage` — prompt / completion / total tokens + estimated cost
+Every query execution is written to `QueryLog` (PostgreSQL). `src/observability/analytics.ts` queries this table using Prisma's `aggregate`, `groupBy`, and `findMany`.
+
+**Analytics layer — `src/observability/analytics.ts`:**
+
+| Function | Prisma method | What it returns |
+|---|---|---|
+| `getQueryVolume(days)` | `findMany` | Queries per day (JS grouping) |
+| `getStrategyDistribution()` | `groupBy` | Semantic vs summary counts |
+| `getRetrievalStats()` | `aggregate` | Avg score, avg latency, total count |
+| `getCragFallbackRate()` | `aggregate` × 2 | Total vs ragUsed:false, rate 0–1 |
+| `getRecentLogs()` | `findMany` | Latest 20 rows |
+| `getTokenUsageStats()` | `aggregate` | Sum + avg of prompt/completion tokens |
+
+**API — `GET /api/admin/logs`:**
+Auth-gated. Calls all six functions with `Promise.all` — one parallel DB round-trip, one JSON response.
+
+**Dashboard — `app/dashboard/page.tsx`:**
+Next.js server component. Imports analytics functions directly — no client-side fetch, no HTTP round-trip. Renders stat cards, CSS bar charts (no chart library), and a recent queries table. Linked from sidebar via `LayoutDashboard` icon.
 
 ---
 

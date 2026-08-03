@@ -3,9 +3,10 @@
 import { ChatSession } from "@/types/chat";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Plus, MessageSquare, LogOut } from "lucide-react";
+import { Plus, MessageSquare, LogOut, LayoutDashboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useClerk } from "@clerk/nextjs";
+import Link from "next/link";
 import ThemeToggle from "./ThemeToggle";
 
 type SidebarProps = {
@@ -71,6 +72,17 @@ export default function Sidebar({
           </div>
         )}
       </ScrollArea>
+
+      {/* Dashboard link */}
+      <div className="px-3 pb-2">
+        <Link
+          href="/dashboard"
+          className="flex items-center gap-2.5 w-full rounded-lg px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <LayoutDashboard className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          Observability
+        </Link>
+      </div>
 
       {/* Footer — theme toggle + logout */}
       <div className="mx-3 h-px bg-border/40" />
